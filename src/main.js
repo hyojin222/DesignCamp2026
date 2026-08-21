@@ -30,6 +30,7 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.rotateSpeed = 0.8;
+// Real min/max are set per-load in frameCluster(), scaled to the initial zoom.
 controls.minDistance = 0.05;
 controls.maxDistance = 50;
 
@@ -178,7 +179,7 @@ function randomRange(min, max) {
 
 // 30 objects total, repeating the available types as needed, scattered on the
 // surface of an imaginary sphere and each facing outward from its center.
-const SPHERE_RADIUS = 3.2;
+const SPHERE_RADIUS = 2.0;
 const TARGET_SIZE = 2.2;
 const TOTAL_COUNT = 30;
 
@@ -223,7 +224,8 @@ function placeOnSphere(object) {
 function frameCluster() {
   const clusterRadius = SPHERE_RADIUS + TARGET_SIZE / 2;
   const fitDistance = clusterRadius / Math.sin((Math.PI * camera.fov) / 360);
-  const cameraDistance = fitDistance * 1.1;
+  // Start noticeably zoomed in (well inside the exact "whole cluster fits" distance).
+  const cameraDistance = fitDistance * 0.6;
 
   const theta = randomRange(0, Math.PI * 2);
   const phi = randomRange(Math.PI * 0.25, Math.PI * 0.75);
@@ -236,6 +238,10 @@ function frameCluster() {
   camera.near = cameraDistance / 100;
   camera.far = fitDistance * 100;
   camera.updateProjectionMatrix();
+
+  // Only allow zooming +-30% around the initial distance.
+  controls.minDistance = cameraDistance * 0.7;
+  controls.maxDistance = cameraDistance * 1.3;
 
   controls.target.set(0, 0, 0);
   controls.update();
