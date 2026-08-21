@@ -53,6 +53,10 @@ scene.add(fillLight);
 const loader = new GLTFLoader();
 let currentModel = null;
 
+function randomRange(min, max) {
+  return min + Math.random() * (max - min);
+}
+
 function frameModel(object) {
   const box = new THREE.Box3().setFromObject(object);
   const size = box.getSize(new THREE.Vector3());
@@ -63,8 +67,17 @@ function frameModel(object) {
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
   const fitDistance = maxDim / (2 * Math.tan((Math.PI * camera.fov) / 360));
 
-  camera.position.set(0, 0, fitDistance * 1.6);
-  camera.near = fitDistance / 100;
+  // Zoom in close so the model's texture fills the frame, from a random angle each load.
+  const zoomDistance = fitDistance * randomRange(0.42, 0.58);
+  const theta = randomRange(0, Math.PI * 2);
+  const phi = randomRange(Math.PI * 0.3, Math.PI * 0.7);
+
+  camera.position.set(
+    zoomDistance * Math.sin(phi) * Math.cos(theta),
+    zoomDistance * Math.cos(phi),
+    zoomDistance * Math.sin(phi) * Math.sin(theta)
+  );
+  camera.near = zoomDistance / 100;
   camera.far = fitDistance * 100;
   camera.updateProjectionMatrix();
 
