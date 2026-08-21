@@ -8,7 +8,7 @@ const statusEl = document.getElementById('status');
 const selectEl = document.getElementById('model-select');
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1a1a1a);
+scene.background = new THREE.Color(0xFCFF1F);
 
 const camera = new THREE.PerspectiveCamera(
   45,
@@ -43,6 +43,31 @@ const gltfLoader = new GLTFLoader();
 const objLoader = new OBJLoader();
 const textureLoader = new THREE.TextureLoader();
 let currentModel = null;
+
+const clock = new THREE.Clock();
+// The fall is a touch faster (higher stiffness) than the rise, and damping
+// differs so the rise stays smooth while the fall has a visible bounce.
+const SPRING_STIFFNESS_RISE = 6;
+const SPRING_STIFFNESS_FALL = 8;
+const SPRING_DAMPING_RISE = 4.4;
+const SPRING_DAMPING_FALL = 2.0;
+let dipAmount = 0;
+let bobOffset = 0;
+let bobVelocity = 0;
+let bobTarget = 0;
+let currentStiffness = SPRING_STIFFNESS_RISE;
+let currentDamping = SPRING_DAMPING_RISE;
+
+controls.addEventListener('start', () => {
+  bobTarget = dipAmount;
+  currentStiffness = SPRING_STIFFNESS_RISE;
+  currentDamping = SPRING_DAMPING_RISE;
+});
+controls.addEventListener('end', () => {
+  bobTarget = 0;
+  currentStiffness = SPRING_STIFFNESS_FALL;
+  currentDamping = SPRING_DAMPING_FALL;
+});
 
 function buildMaterial(textures) {
   const material = new THREE.MeshStandardMaterial({ color: 0xd8cdbe, roughness: 0.7, metalness: 0 });
@@ -96,6 +121,14 @@ function frameModel(object) {
 
   controls.target.set(0, 0, 0);
   controls.update();
+
+  // How far the camera rises while dragging, scaled to how close it's sitting.
+  dipAmount = zoomDistance * 0.08;
+  bobOffset = 0;
+  bobVelocity = 0;
+  bobTarget = 0;
+  currentStiffness = SPRING_STIFFNESS_RISE;
+  currentDamping = SPRING_DAMPING_RISE;
 }
 
 function loadModel(model) {
@@ -170,5 +203,18 @@ window.addEventListener('resize', () => {
 
 renderer.setAnimationLoop(() => {
   controls.update();
+
+  // Spring the Y offset toward bobTarget: rises on drag start, eases back down
+  // (with a little overshoot) on release.
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const accel = (bobTarget - bobOffset) * currentStiffness - bobVelocity * currentDamping;
+  bobVelocity += accel * dt;
+  bobOffset += bobVelocity * dt;
+
+  // Nudge for this render only, then undo it — otherwise OrbitControls reads the
+  // offset position back as the "real" camera on the next frame and it compounds
+  // into runaway drift instead of a clean spring motion.
+  camera.position.y += bobOffset;
   renderer.render(scene, camera);
+  camera.position.y -= bobOffset;
 });
