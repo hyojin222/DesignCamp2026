@@ -2,10 +2,12 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import './hud.js';
 
 const app = document.getElementById('app');
 const statusEl = document.getElementById('status');
-const selectEl = document.getElementById('model-select');
+const bubbleCanvas = document.getElementById('bubbles');
+const bubbleCtx = bubbleCanvas.getContext('2d');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xFCFF1F);
@@ -42,7 +44,85 @@ scene.add(fillLight);
 const gltfLoader = new GLTFLoader();
 const objLoader = new OBJLoader();
 const textureLoader = new THREE.TextureLoader();
-let currentModel = null;
+
+// Click-triggered bubbles, drawn on a plain 2D overlay canvas above the WebGL one.
+let bubbleDpr = 1;
+function resizeBubbleCanvas() {
+  bubbleDpr = window.devicePixelRatio || 1;
+  bubbleCanvas.width = app.clientWidth * bubbleDpr;
+  bubbleCanvas.height = app.clientHeight * bubbleDpr;
+  bubbleCtx.setTransform(bubbleDpr, 0, 0, bubbleDpr, 0, 0);
+}
+resizeBubbleCanvas();
+
+const bubbles = [];
+function spawnBubbles(count = 10) {
+  const width = app.clientWidth;
+  const height = app.clientHeight;
+  for (let i = 0; i < count; i++) {
+    bubbles.push({
+      x: randomRange(width * 0.15, width * 0.85),
+      y: height + randomRange(0, 10),
+      radius: randomRange(9, 22),
+      riseSpeed: randomRange(70, 140),
+      wobbleAmp: randomRange(6, 18),
+      wobbleFreq: randomRange(1.5, 3),
+      wobblePhase: randomRange(0, Math.PI * 2),
+      age: 0,
+      maxAge: randomRange(1.8, 3),
+    });
+  }
+}
+
+function updateAndDrawBubbles(dt) {
+  const height = app.clientHeight;
+  bubbleCtx.clearRect(0, 0, app.clientWidth, height);
+  for (let i = bubbles.length - 1; i >= 0; i--) {
+    const b = bubbles[i];
+    b.age += dt;
+    if (b.age >= b.maxAge) {
+      bubbles.splice(i, 1);
+      continue;
+    }
+    b.y -= b.riseSpeed * dt;
+    const drawX = b.x + Math.sin(b.wobblePhase + b.age * b.wobbleFreq) * b.wobbleAmp;
+    const lifeT = b.age / b.maxAge;
+    const fadeIn = Math.min(1, b.age / 0.2);
+    const fadeOut = 1 - Math.max(0, (lifeT - 0.7) / 0.3);
+    const alpha = fadeIn * fadeOut;
+
+    bubbleCtx.save();
+    bubbleCtx.shadowColor = 'rgba(255, 255, 255, 0.9)';
+    bubbleCtx.shadowBlur = 12;
+
+    bubbleCtx.beginPath();
+    bubbleCtx.arc(drawX, b.y, b.radius, 0, Math.PI * 2);
+    bubbleCtx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.55})`;
+    bubbleCtx.fill();
+    bubbleCtx.lineWidth = 2;
+    bubbleCtx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+    bubbleCtx.stroke();
+
+    bubbleCtx.beginPath();
+    bubbleCtx.arc(drawX - b.radius * 0.35, b.y - b.radius * 0.35, b.radius * 0.3, 0, Math.PI * 2);
+    bubbleCtx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+    bubbleCtx.fill();
+    bubbleCtx.restore();
+  }
+}
+
+// A plain click (no drag) spawns bubbles; a rotate-drag should not.
+let pointerDownPos = null;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  pointerDownPos = { x: e.clientX, y: e.clientY, t: performance.now() };
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!pointerDownPos) return;
+  const dist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
+  const duration = performance.now() - pointerDownPos.t;
+  pointerDownPos = null;
+  if (dist < 12 && duration < 600) spawnBubbles();
+});
 
 const clock = new THREE.Clock();
 // The fall is a touch faster (higher stiffness) than the rise, and damping
@@ -95,27 +175,64 @@ function randomRange(min, max) {
   return min + Math.random() * (max - min);
 }
 
-function frameModel(object) {
+// 30 objects total, repeating the available types as needed, scattered on the
+// surface of an imaginary sphere and each facing outward from its center.
+const SPHERE_RADIUS = 3.2;
+const TARGET_SIZE = 2.2;
+const TOTAL_COUNT = 30;
+
+function randomPointOnSphere(radius) {
+  const u = Math.random();
+  const v = Math.random();
+  const theta = 2 * Math.PI * u;
+  const phi = Math.acos(2 * v - 1);
+  return new THREE.Vector3(
+    radius * Math.sin(phi) * Math.cos(theta),
+    radius * Math.sin(phi) * Math.sin(theta),
+    radius * Math.cos(phi)
+  );
+}
+
+// Normalize the object to the target size, then wrap it in a group placed at a
+// random spot on the sphere and rotated to face outward (away from center).
+// The wrapping is what makes rotation not shift the object's visual center:
+// the mesh is centered on the group's own origin, so spinning the group in
+// place never moves that origin away from the sphere point it was given.
+function placeOnSphere(object) {
   const box = new THREE.Box3().setFromObject(object);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
-
-  object.position.sub(center);
-
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
-  const fitDistance = maxDim / (2 * Math.tan((Math.PI * camera.fov) / 360));
 
-  // Zoom in close so the model's texture fills the frame, from a random angle each load.
-  const zoomDistance = fitDistance * randomRange(0.42, 0.58);
+  const scale = TARGET_SIZE / maxDim;
+  object.scale.setScalar(scale);
+  object.position.copy(center).multiplyScalar(-scale);
+
+  const group = new THREE.Group();
+  group.add(object);
+
+  const point = randomPointOnSphere(SPHERE_RADIUS);
+  group.position.copy(point);
+  group.lookAt(point.clone().multiplyScalar(2));
+
+  return group;
+}
+
+// Frame the camera to fit the whole sphere of objects, from a random angle each load.
+function frameCluster() {
+  const clusterRadius = SPHERE_RADIUS + TARGET_SIZE / 2;
+  const fitDistance = clusterRadius / Math.sin((Math.PI * camera.fov) / 360);
+  const cameraDistance = fitDistance * 1.1;
+
   const theta = randomRange(0, Math.PI * 2);
-  const phi = randomRange(Math.PI * 0.3, Math.PI * 0.7);
+  const phi = randomRange(Math.PI * 0.25, Math.PI * 0.75);
 
   camera.position.set(
-    zoomDistance * Math.sin(phi) * Math.cos(theta),
-    zoomDistance * Math.cos(phi),
-    zoomDistance * Math.sin(phi) * Math.sin(theta)
+    cameraDistance * Math.sin(phi) * Math.cos(theta),
+    cameraDistance * Math.cos(phi),
+    cameraDistance * Math.sin(phi) * Math.sin(theta)
   );
-  camera.near = zoomDistance / 100;
+  camera.near = cameraDistance / 100;
   camera.far = fitDistance * 100;
   camera.updateProjectionMatrix();
 
@@ -123,7 +240,7 @@ function frameModel(object) {
   controls.update();
 
   // How far the camera rises while dragging, scaled to how close it's sitting.
-  dipAmount = zoomDistance * 0.08;
+  dipAmount = cameraDistance * 0.04;
   bobOffset = 0;
   bobVelocity = 0;
   bobTarget = 0;
@@ -132,41 +249,24 @@ function frameModel(object) {
 }
 
 function loadModel(model) {
-  statusEl.textContent = '불러오는 중...';
-  statusEl.style.display = 'block';
-
-  if (currentModel) {
-    scene.remove(currentModel);
-    currentModel = null;
-  }
-
-  const onLoaded = (object) => {
-    currentModel = object;
-    scene.add(currentModel);
-    frameModel(currentModel);
-    statusEl.style.display = 'none';
-  };
-  const onError = (err) => {
-    console.error(err);
-    statusEl.textContent = '모델을 불러오지 못했습니다.';
-  };
-
-  if (model.type === 'obj') {
-    objLoader.load(
-      model.mesh,
-      (object) => {
-        const material = buildMaterial(model.textures);
-        object.traverse((child) => {
-          if (child.isMesh) child.material = material;
-        });
-        onLoaded(object);
-      },
-      undefined,
-      onError
-    );
-  } else {
-    gltfLoader.load(model.mesh, (gltf) => onLoaded(gltf.scene), undefined, onError);
-  }
+  return new Promise((resolve, reject) => {
+    if (model.type === 'obj') {
+      objLoader.load(
+        model.mesh,
+        (object) => {
+          const material = buildMaterial(model.textures);
+          object.traverse((child) => {
+            if (child.isMesh) child.material = material;
+          });
+          resolve(object);
+        },
+        undefined,
+        reject
+      );
+    } else {
+      gltfLoader.load(model.mesh, (gltf) => resolve(gltf.scene), undefined, reject);
+    }
+  });
 }
 
 async function init() {
@@ -178,19 +278,27 @@ async function init() {
     return;
   }
 
-  selectEl.innerHTML = '';
-  for (const m of models) {
-    const opt = document.createElement('option');
-    opt.value = m.id;
-    opt.textContent = m.label;
-    selectEl.appendChild(opt);
+  statusEl.textContent = '불러오는 중...';
+  statusEl.style.display = 'block';
+
+  const objects = await Promise.all(
+    models.map((model) =>
+      loadModel(model).catch((err) => {
+        console.error(err);
+        return null;
+      })
+    )
+  );
+
+  // Each unique model is fetched once; repeat them round-robin to fill out 30.
+  const templates = objects.filter(Boolean);
+  for (let i = 0; i < TOTAL_COUNT && templates.length; i++) {
+    const instance = templates[i % templates.length].clone(true);
+    scene.add(placeOnSphere(instance));
   }
 
-  selectEl.addEventListener('change', () => {
-    const model = models.find((m) => m.id === selectEl.value);
-    loadModel(model);
-  });
-  loadModel(models[0]);
+  frameCluster();
+  statusEl.style.display = 'none';
 }
 
 init();
@@ -199,6 +307,7 @@ window.addEventListener('resize', () => {
   camera.aspect = app.clientWidth / app.clientHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(app.clientWidth, app.clientHeight);
+  resizeBubbleCanvas();
 });
 
 renderer.setAnimationLoop(() => {
@@ -217,4 +326,6 @@ renderer.setAnimationLoop(() => {
   camera.position.y += bobOffset;
   renderer.render(scene, camera);
   camera.position.y -= bobOffset;
+
+  updateAndDrawBubbles(dt);
 });

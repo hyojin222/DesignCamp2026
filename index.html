@@ -24,20 +24,11 @@
       canvas:active {
         cursor: grabbing;
       }
-      #ui {
+      #bubbles {
         position: absolute;
-        top: 16px;
-        left: 16px;
-        z-index: 10;
-        display: flex;
-        gap: 8px;
-      }
-      #ui select {
-        padding: 8px 12px;
-        border-radius: 8px;
-        border: none;
-        background: rgba(255, 255, 255, 0.9);
-        font-size: 14px;
+        inset: 0;
+        z-index: 5;
+        pointer-events: none;
       }
       #status {
         position: absolute;
@@ -47,14 +38,150 @@
         color: rgba(255, 255, 255, 0.6);
         font-size: 13px;
       }
+      .hud {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        pointer-events: none;
+        display: none;
+      }
+      .hud.active {
+        display: block;
+      }
+      .hud svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      #hud-2-vignette {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(
+          ellipse at center,
+          transparent 45%,
+          rgba(0, 0, 0, 0.25) 70%,
+          rgba(0, 0, 0, 0.75) 100%
+        );
+      }
+      #hud-hint {
+        position: fixed;
+        bottom: 16px;
+        right: 16px;
+        z-index: 101;
+        color: rgba(255, 255, 255, 0.35);
+        font-size: 12px;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        pointer-events: none;
+      }
     </style>
   </head>
   <body>
     <div id="app">
-      <div id="ui">
-        <select id="model-select"></select>
-      </div>
+      <canvas id="bubbles"></canvas>
       <div id="status">불러오는 중...</div>
+
+      <div id="hud-1" class="hud">
+        <svg viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+          <defs>
+            <mask id="hud1-porthole-mask">
+              <rect width="1920" height="1080" fill="white" />
+              <circle cx="968" cy="555" r="670" fill="black" />
+            </mask>
+            <radialGradient id="hud1-reticle-glow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="white" stop-opacity="0.9" />
+              <stop offset="100%" stop-color="white" stop-opacity="0" />
+            </radialGradient>
+          </defs>
+
+          <rect width="1920" height="1080" fill="black" mask="url(#hud1-porthole-mask)" />
+          <circle cx="968" cy="555" r="670" fill="none" stroke="#aaaaaa" stroke-width="1.5" />
+
+          <g id="hud1-hex-ring" fill="#616161"></g>
+
+          <g stroke="#767676" stroke-width="1.5" fill="none">
+            <circle cx="159" cy="153" r="86" fill="url(#hud1-reticle-glow)" stroke="#767676" />
+            <line x1="159" y1="62" x2="159" y2="250" stroke="black" stroke-width="9" stroke-linecap="square" />
+            <line x1="69" y1="153" x2="251" y2="153" stroke="black" stroke-width="9" stroke-linecap="square" />
+            <line x1="53" y1="153" x2="63" y2="153" />
+            <line x1="256" y1="153" x2="266" y2="153" />
+            <path d="M152.7 258.5 159 251 165.3 258.5" />
+            <path d="M152.7 50.5 159 57.9 165.3 50.5" />
+          </g>
+          <circle cx="159" cy="153" r="6" fill="#767676" />
+
+          <g fill="#d0d0d0" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="16" letter-spacing="0.5">
+            <text x="58" y="852">DIST:&#160;&#160;3.7 KM</text>
+            <text x="58" y="888">SPEED:&#160;&#160;0.094 KM/S</text>
+            <text x="58" y="962">PITCH:&#160;&#160;MANUAL</text>
+            <text x="58" y="999">R/Y:&#160;&#160;BYPASS</text>
+
+            <text x="1778" y="79">X: -7.4 M</text>
+            <text x="1778" y="113">Y: -2.8 M</text>
+            <text x="1778" y="226">R: +306</text>
+            <text x="1778" y="266">P: +289</text>
+            <text x="1778" y="306">Y: -031</text>
+          </g>
+          <text x="1815" y="1004" fill="#cdcdcd" font-family="system-ui, sans-serif" font-size="74" font-weight="700" text-anchor="end">67</text>
+        </svg>
+      </div>
+
+      <div id="hud-2" class="hud">
+        <div id="hud-2-vignette"></div>
+        <svg viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+          <g stroke="#767676" stroke-width="1.5" fill="none" stroke-linecap="square">
+            <path d="M0 40 Q960 210 1920 40" />
+            <path d="M0 1040 Q960 870 1920 1040" />
+
+            <path d="M40 25 Q10 300 90 610" stroke-dasharray="26 26" />
+            <path d="M1880 25 Q1910 300 1830 610" stroke-dasharray="26 26" />
+            <path d="M90 1055 Q10 780 40 470" stroke-dasharray="26 26" />
+            <path d="M1830 1055 Q1910 780 1880 470" stroke-dasharray="26 26" />
+
+            <path d="M180 500 a45 65 0 0 0 0 70" />
+            <path d="M195 505 a35 55 0 0 0 0 60" />
+            <line x1="230" y1="535" x2="456" y2="535" />
+            <line x1="456" y1="524" x2="456" y2="547" />
+
+            <path d="M1740 500 a45 65 0 0 1 0 70" />
+            <path d="M1725 505 a35 55 0 0 1 0 60" />
+            <line x1="1690" y1="535" x2="1464" y2="535" />
+            <line x1="1464" y1="524" x2="1464" y2="547" />
+
+            <line x1="997" y1="61" x2="997" y2="225" />
+            <line x1="985" y1="61" x2="1008" y2="61" />
+            <line x1="997" y1="893" x2="997" y2="1006" />
+            <line x1="985" y1="1006" x2="1008" y2="1006" />
+
+            <line x1="976" y1="752" x2="1016" y2="752" stroke-width="4" />
+          </g>
+
+          <g fill="#111111" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="16" letter-spacing="0.5">
+            <text x="1471" y="313">DIST:&#160;&#160;3.7 KM</text>
+            <text x="1471" y="391">PITCH:&#160;&#160;MANUAL</text>
+            <text x="1471" y="428">R/Y:&#160;&#160;BYPASS</text>
+          </g>
+
+          <g text-anchor="middle">
+            <text x="996" y="808" fill="#111111" font-family="system-ui, sans-serif" font-size="52" font-weight="700">67</text>
+            <text x="996" y="842" fill="#111111" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="15">KM/S</text>
+          </g>
+
+          <g fill="#111111" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="15" letter-spacing="0.5">
+            <text x="380" y="962">R: +306</text>
+            <text x="540" y="948">R: +306</text>
+            <text x="700" y="935">R: +306</text>
+            <text x="860" y="925">R: +306</text>
+          </g>
+          <g fill="#111111" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="15" letter-spacing="0.5" transform="scale(-1,1)">
+            <text x="-1540" y="962">R: +306</text>
+            <text x="-1380" y="948">R: +306</text>
+            <text x="-1220" y="935">R: +306</text>
+            <text x="-1060" y="925">R: +306</text>
+          </g>
+        </svg>
+      </div>
+
+      <div id="hud-hint">1 / 2 — UI 시안 전환</div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>
