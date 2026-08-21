@@ -10,7 +10,7 @@ const bubbleCanvas = document.getElementById('bubbles');
 const bubbleCtx = bubbleCanvas.getContext('2d');
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xFCFF1F);
+scene.background = new THREE.Color(0x090909);
 
 const camera = new THREE.PerspectiveCamera(
   45,
@@ -44,6 +44,7 @@ scene.add(fillLight);
 const gltfLoader = new GLTFLoader();
 const objLoader = new OBJLoader();
 const textureLoader = new THREE.TextureLoader();
+const BASE = import.meta.env.BASE_URL;
 
 // Click-triggered bubbles, drawn on a plain 2D overlay canvas above the WebGL one.
 let bubbleDpr = 1;
@@ -153,21 +154,21 @@ function buildMaterial(textures) {
   const material = new THREE.MeshStandardMaterial({ color: 0xd8cdbe, roughness: 0.7, metalness: 0 });
   if (!textures) return material;
   if (textures.map) {
-    const map = textureLoader.load(textures.map);
+    const map = textureLoader.load(BASE + textures.map);
     map.colorSpace = THREE.SRGBColorSpace;
     material.map = map;
     material.color.set(0xffffff);
   }
-  if (textures.normalMap) material.normalMap = textureLoader.load(textures.normalMap);
+  if (textures.normalMap) material.normalMap = textureLoader.load(BASE + textures.normalMap);
   if (textures.roughnessMap) {
-    material.roughnessMap = textureLoader.load(textures.roughnessMap);
+    material.roughnessMap = textureLoader.load(BASE + textures.roughnessMap);
     material.roughness = 1;
   }
   if (textures.metalnessMap) {
-    material.metalnessMap = textureLoader.load(textures.metalnessMap);
+    material.metalnessMap = textureLoader.load(BASE + textures.metalnessMap);
     material.metalness = 1;
   }
-  if (textures.bumpMap) material.bumpMap = textureLoader.load(textures.bumpMap);
+  if (textures.bumpMap) material.bumpMap = textureLoader.load(BASE + textures.bumpMap);
   return material;
 }
 
@@ -252,7 +253,7 @@ function loadModel(model) {
   return new Promise((resolve, reject) => {
     if (model.type === 'obj') {
       objLoader.load(
-        model.mesh,
+        BASE + model.mesh,
         (object) => {
           const material = buildMaterial(model.textures);
           object.traverse((child) => {
@@ -264,13 +265,13 @@ function loadModel(model) {
         reject
       );
     } else {
-      gltfLoader.load(model.mesh, (gltf) => resolve(gltf.scene), undefined, reject);
+      gltfLoader.load(BASE + model.mesh, (gltf) => resolve(gltf.scene), undefined, reject);
     }
   });
 }
 
 async function init() {
-  const res = await fetch('/models/manifest.json');
+  const res = await fetch(BASE + 'models/manifest.json');
   const models = await res.json();
 
   if (!models.length) {

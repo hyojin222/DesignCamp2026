@@ -148,7 +148,7 @@ export async function generateAssets() {
     const destDir = path.join(OUTPUT_DIR, slug);
     await fs.mkdir(destDir, { recursive: true });
     await fs.copyFile(file, path.join(destDir, 'model.glb'));
-    manifest.push({ id: slug, label: titleCase(base), type: 'glb', mesh: `/models/${slug}/model.glb` });
+    manifest.push({ id: slug, label: titleCase(base), type: 'glb', mesh: `models/${slug}/model.glb` });
   }
 
   for (const [groupKey, group] of objGroups) {
@@ -175,14 +175,14 @@ export async function generateAssets() {
     for (const [role, srcPath] of Object.entries(chosenTextures)) {
       const destPathNoExt = path.join(destDir, role);
       const destPath = await convertTexture(srcPath, destPathNoExt, role);
-      textureUrls[role] = `/models/${slug}/${path.basename(destPath)}`;
+      textureUrls[role] = `models/${slug}/${path.basename(destPath)}`;
     }
 
     manifest.push({
       id: slug,
       label: titleCase(group.name),
       type: 'obj',
-      mesh: `/models/${slug}/model.obj`,
+      mesh: `models/${slug}/model.obj`,
       textures: Object.keys(textureUrls).length ? textureUrls : undefined,
     });
   }

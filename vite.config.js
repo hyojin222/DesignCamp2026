@@ -38,5 +38,6 @@ function foodAssetsPlugin() {
 }
 
 export default defineConfig({
+  base: process.env.GITHUB_PAGES ? '/DesignCamp2026/' : '/',
   plugins: [foodAssetsPlugin()],
 });
