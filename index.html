@@ -46,6 +46,24 @@
         color: rgba(255, 255, 255, 0.6);
         font-size: 13px;
       }
+      /* Solid-color loading screen: sits above everything (hud/buttons
+         included) from first paint, so nothing underneath — the goggle mask
+         fallback shape, the button's fallback icon — is ever actually
+         visible while it's still settling into its final state. Hidden once
+         every async load (models + goggle mask + button icon, see the
+         Promise.all in main.js) has settled. Color matches BG_YELLOW_COLOR
+         in main.js — keep the two in sync if that constant ever changes. */
+      #loading-screen {
+        position: fixed;
+        inset: 0;
+        z-index: 500;
+        background: #fff075;
+        transition: opacity 0.3s ease;
+      }
+      #loading-screen.loading-screen-hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
       #hud-1 {
         position: fixed;
         inset: 0;
@@ -57,99 +75,83 @@
         width: 100%;
         height: 100%;
       }
-      #word-list {
-        position: fixed;
-        left: 32px;
-        bottom: 30px;
-        z-index: 200;
-        display: grid;
-        /* Fixed, not auto — auto sizes each column to its widest current
-           content, so as the typewriter effect grows one row's word, every
-           other row sharing that column would shift too. A fixed width reserves
-           each word's space up front regardless of how long it ends up being.
-           4 columns x row-major auto-placement = 3 rows for the 10 words
-           (4 + 4 + 2), same as grid-auto-flow's default. */
-        grid-template-columns: repeat(8, 160px);
-        gap: 4px 6px;
-        pointer-events: none;
-      }
-      .word-item {
-        color: #fff81f;
-        font-family: var(--font-noto);
-        font-size: 16px;
-        font-weight: 400;
-        line-height: 1.4;
-        opacity: 0.2;
-        white-space: nowrap;
-        overflow: hidden;
-        transition: opacity 0.3s ease;
-      }
-      .word-item.active {
-        font-weight: 500;
-        opacity: 1;
-      }
-      #camera-readout {
-        position: fixed;
-        right: 32px;
-        bottom: 30px;
-        z-index: 200;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-      }
-      #camera-coords {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        gap: 8px;
-        margin-top: 12px;
-      }
       #btn-random-object {
+        position: fixed;
+        left: 50%;
+        bottom: 30px;
+        z-index: 200;
         padding: 0;
         border: none;
         background: none;
         cursor: pointer;
         pointer-events: auto;
         opacity: 1;
+        /* translateX(-50%) is relative to the element's own width, so its
+           midpoint (not its left edge) lands on the 50% viewport line —
+           folded into every transform value below (base/hover/spin) since
+           each one overwrites `transform` wholesale, not just the rotation.
+           --spin (an integer turn count, bumped once per completed spin in
+           main.js) keeps every rule's rotate() built off the *same*
+           ever-growing angle instead of wrapping back to a fixed 0deg/-14deg.
+           Without that, handing off from the spin animation's end angle
+           (which keeps climbing: 346deg, 706deg, 1066deg, ...) back to a
+           rule pinned at a fixed small angle is a huge numeric gap, and the
+           0.25s transition covers that whole gap just as fast as the short
+           hops it's meant for — reading as an instant snap instead of an
+           eased return, right whenever the mouse leaves the button mid-spin
+           or the instant after a click. Building every rule off --spin
+           keeps that gap at a constant 14deg no matter how many spins have
+           played. */
+        transform: translateX(-50%) rotate(calc(var(--spin, 0) * 360deg));
         transition: transform 0.25s ease;
       }
       #btn-random-object:hover {
-        transform: rotate(-14deg);
+        transform: translateX(-50%) rotate(calc(var(--spin, 0) * 360deg - 14deg));
       }
       /* One-shot clockwise spin on click, toggled via .spin in main.js
          (removed again on 'animationend' so it can replay every click). An
          active animation overrides the :hover transform above for its
          duration — starting from that same -14deg tilt (instead of snapping
          to 0 first) so a hover-then-click reads as one continuous motion,
-         and ending a full turn past it so it lands back at the tilt too. */
+         and ending a full turn past it so it lands back at the tilt too.
+         forwards keeps the element pinned at the end-of-spin angle for the
+         instant between the animation finishing and 'animationend' actually
+         removing the class — without it (default fill-mode: none) the style
+         can revert a frame early, which is its own small source of the same
+         kind of jump this rule is otherwise trying to avoid. main.js bumps
+         --spin in that same 'animationend' handler, so the moment the class
+         drops, the hover/base rules above already agree with where this
+         animation just left off. --spin-tilt (also main.js, kept live off
+         hover enter/leave the whole time the button exists, not just during
+         a spin) is what that agreement depends on: it's -14deg while
+         hovered and 0deg while not, so the 'to' keyframe below lands on
+         exactly the hover or base rule's own angle for whichever one
+         applies once the class drops — including a hover/unhover that
+         happens mid-spin, since a running animation still re-resolves a
+         var() every frame. */
       #btn-random-object.spin {
-        animation: btn-random-object-spin 0.7s ease-out;
+        animation: btn-random-object-spin 0.7s ease-out forwards;
       }
       @keyframes btn-random-object-spin {
         from {
-          transform: rotate(-14deg);
+          transform: translateX(-50%) rotate(calc(var(--spin, 0) * 360deg - 14deg));
         }
         to {
-          transform: rotate(346deg);
+          transform: translateX(-50%) rotate(calc((var(--spin, 0) + 1) * 360deg + var(--spin-tilt, -14deg)));
         }
       }
       #btn-random-object svg {
         display: block;
-        width: 88px;
-        height: 88px;
+        width: 164px;
+        height: 164px;
         fill: #fff81f;
-      }
-      .coord-line {
-        color: #fff81f;
-        font-variant-numeric: tabular-nums;
-        font-size: 24px;
-        text-align: right;
       }
     </style>
   </head>
   <body>
     <div id="app">
       <div id="status">불러오는 중...</div>
+      <div id="loading-screen"></div>
 
       <!-- Goggle-shaped porthole frame. Its fill (id="hud1-frame") is driven
            from main.js, in sync with the scene background color. The
@@ -166,13 +168,14 @@
               <rect id="hud1-mask-bg" width="1920" height="1080" fill="white" />
               <!-- Fallback shape for before main.js fetches the live
                    source/layout/goggle.svg (see loadGoggleMask() there) and
-                   replaces this element outright, so editing that file and
-                   reloading is all it takes to change the goggle cutout. -->
-              <svg id="hud1-goggle-shape" x="134.4" y="70" width="1651.2" height="896.8" viewBox="0 0 1837.74 998.11" preserveAspectRatio="xMidYMid meet">
-                <path
-                  fill="black"
-                  d="M1807.29,0H30.45C13.63,0,0,13.63,0,30.45v861.76c0,58.49,47.41,105.9,105.9,105.9h529.87c42.39,0,81.55-22.67,102.66-59.43,30.86-53.74,71.61-124.47,71.61-124.47,48.37-83.78,169.29-83.78,217.66,0,0,0,40.74,70.73,71.61,124.47,21.11,36.76,60.27,59.43,102.66,59.43h529.87c58.49,0,105.9-47.41,105.9-105.9V30.45c0-16.82-13.63-30.45-30.45-30.45Z"
-                />
+                   replaces this element outright — kept as a baked copy of
+                   that file's current path so the two never visibly
+                   disagree. This is only ever visible for an instant behind
+                   #loading-screen anyway (see above), but stays synced as a
+                   belt-and-suspenders match: re-copy the path here whenever
+                   that source file's shape changes. -->
+              <svg id="hud1-goggle-shape" viewBox="0 0 1975.98 1038.2" preserveAspectRatio="xMidYMid meet">
+                <path fill="black" d="M1811.84,167.41C1651.52,16.7,1396.05,0,987.99,0S324.47,16.7,164.15,167.41C28.29,295.13,0,419.56,0,554.87c0,145.68,77.51,446.18,387.46,477.1,271.45,27.08,373.56-36.1,431.81-150.06,30.76-60.18,70.43-157.62,99.16-236.13,28.23-77.15,57.15-80.61,69.56-80.61s41.33,3.45,69.56,80.61c28.73,78.51,68.4,175.96,99.16,236.13,58.25,113.96,160.36,177.14,431.8,150.06,309.95-30.92,387.46-331.42,387.46-477.1,0-135.31-28.29-259.74-164.15-387.46Z" />
               </svg>
             </mask>
           </defs>
@@ -181,27 +184,17 @@
         </svg>
       </div>
 
-      <!-- 4x3 word list, populated and typewriter-animated from main.js
-           (renderWordList()) — highlights whichever word matches the
-           currently-focused wall object, in a language re-picked each time. -->
-      <div id="word-list"></div>
-
       <!-- Bottom-right: the random-object button (jumps to a different
-           random object, excluding the last 3 seen) above a live camera x/y
-           readout, both driven from main.js. This inline svg is only the
-           fallback shown before loadButtonIcon() fetches the live
+           random object, excluding the last 3 seen). This inline svg is only
+           the fallback shown before loadButtonIcon() fetches the live
            source/icon/re.svg (copied to public/icon/ by
-           scripts/generate-assets.mjs) and replaces it outright — editing
-           that source file and reloading is all it takes to change the icon. -->
-      <div id="camera-readout">
-        <button id="btn-random-object" type="button" aria-label="랜덤 오브제">
-          <svg viewBox="0 -960 960 960"><path d="M482-160q-134 0-228-93t-94-227v-7l-64 64-56-56 160-160 160 160-56 56-64-64v7q0 100 70.5 170T482-240q26 0 51-6t49-18l60 60q-38 22-78 33t-82 11Zm278-161L600-481l56-56 64 64v-7q0-100-70.5-170T478-720q-26 0-51 6t-49 18l-60-60q38-22 78-33t82-11q134 0 228 93t94 227v7l64-64 56 56-160 160Z"/></svg>
-        </button>
-        <div id="camera-coords">
-          <div id="camera-x" class="coord-line"></div>
-          <div id="camera-y" class="coord-line"></div>
-        </div>
-      </div>
+           scripts/generate-assets.mjs) and replaces it outright — kept as a
+           baked copy of that file's current path so the two never visibly
+           disagree (only ever visible for an instant behind #loading-screen
+           anyway). Re-copy the path here whenever that source file changes. -->
+      <button id="btn-random-object" type="button" aria-label="랜덤 오브제">
+        <svg viewBox="0 -960 960 960"><path d="M196-194v-22h134l-50-49q-48-47-71-99.5T186-476q0-90 50-165t134-111v23q-74 34-118 102.5T208-476q0 56 21 104t62 87l56 54v-136h22v173H196Zm394-14v-23q75-34 118.5-102.5T752-484q0-51-21-100.5T670-674l-56-55v136h-22v-173h173v22H631l49 50q48 47 71 101.5T774-484q0 90-50 165T590-208Z"/></svg>
+      </button>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>
