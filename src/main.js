@@ -6,18 +6,21 @@ import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 // ============================================================================
 // Look & feel tuning — kept together here since these get tweaked a lot.
 // ============================================================================
-const YELLOW_COLOR = 0xffe600; // the flat "노란 단색" used for the yellow stage
-const BG_YELLOW_COLOR = 0xfff075; // background/porthole-frame color outside look-mode 3, and mode 3's stage-3 color
-const BG_BLACK_COLOR = 0x090909; // look-mode 3's background/porthole-frame color during stages 1-2
+const YELLOW_COLOR = 0xffe600; // the flat "노란 단색" every object is permanently shown in
+// Scene background color, visible through the goggle-shaped cutout in the
+// HUD porthole. The frame area outside the cutout is white — that's the
+// static fill on the #hud1-frame rect in index.html, untouched from here.
+const BG_YELLOW_COLOR = 0xfff075;
 const RENDER_EXPOSURE = 2.5; // renderer.toneMappingExposure — lower = darker overall, less washed-out/ivory highlights
-// Look-mode 1's roughness: lower = tighter, brighter specular highlight from
-// the key/fill lights (more visible "shine"); higher = softer/duller, closer
-// to no highlight at all (1.0 is roughly what look-mode 1 used to be).
+// The yellow material's roughness: lower = tighter, brighter specular
+// highlight from the key/fill lights (more visible "shine"); higher =
+// softer/duller, closer to no highlight at all (1.0 is roughly the old look).
 const YELLOW_LIT_ROUGHNESS = 0.35;
-// Look-mode 1's shaded/dark side would otherwise just fade toward a dull,
-// desaturated gray-yellow as light falls off. This emissive accent (usually
-// a deeper, more saturated version of YELLOW_COLOR) adds a light-independent
-// floor of color, so the shadow side stays rich/colorful instead of muddy.
+// The yellow material's shaded/dark side would otherwise just fade toward a
+// dull, desaturated gray-yellow as light falls off. This emissive accent
+// (usually a deeper, more saturated version of YELLOW_COLOR) adds a
+// light-independent floor of color, so the shadow side stays rich/colorful
+// instead of muddy.
 const YELLOW_SHADOW_COLOR = 0xE8A000;
 const YELLOW_SHADOW_INTENSITY = 0.25; // 0 = no boost, higher = richer/brighter shadow
 // Ambient light lands equally on every face regardless of orientation, so
@@ -25,22 +28,21 @@ const YELLOW_SHADOW_INTENSITY = 0.25; // 0 = no boost, higher = richer/brighter 
 // matte look without touching the side already lit by the key/fill lights.
 const AMBIENT_LIGHT_INTENSITY = 0.6;
 
-// Stage-cycle tuning: each shown object goes through 3 stages of
-// STAGE_DURATION seconds each — (1) yellow + close-up, (2) yellow + whole
-// object, (3) original texture + whole object — then hands off to a new
-// random object (never repeating the one just shown).
-const STAGE_DURATION = 3; // seconds per stage
-const CLOSE_ZOOM_MULTIPLIER = 0.3; // stage-1 close-up distance, x the object's bounding radius
-// Stage-1's distance is never allowed under this, x the object's bounding
+// Wall-gallery tuning: every loaded model is placed once on an invisible
+// wall (same z, spread across x/y) in its permanent close-up + yellow look.
+// The back/forward buttons jump the camera to a different random object on
+// that wall, staying at close-up zoom throughout instead of zooming out.
+const CLOSE_ZOOM_MULTIPLIER = 0.3; // close-up distance, x the object's bounding radius
+// The close-up distance is never allowed under this, x the object's bounding
 // radius (half the bounding box's diagonal — a sphere guaranteed to fully
 // contain the geometry from any angle) — so however tight CLOSE_ZOOM_MULTIPLIER
-// is set, the initial camera placement can't end up inside the object.
+// is set, the camera can't end up inside the object.
 const MIN_SAFE_ZOOM_MULTIPLIER = 1.05;
-const WHOLE_OBJECT_ZOOM_MARGIN = 1.25; // stage-2/3 whole-object distance, x the FOV-fit distance
-// How far the user can zoom in/out from whichever stage's target distance,
-// as a +/-fraction of it.
+// How far the user can zoom in/out from the focused object's close-up
+// distance, as a +/-fraction of it.
 const ZOOM_RANGE_FRACTION = 0.1;
-const ZOOM_STAGE_TRANSITION_DURATION = 0.8; // seconds, eased zoom-out leaving stage 1
+const PAN_TRANSITION_DURATION = 0.9; // seconds, eased camera pan between objects
+const AUTO_ADVANCE_INTERVAL = 10; // seconds between automatic forward advances (paused while dragging or in debug mode)
 // How much camera rotation a drag produces (TrackballControls' rotateSpeed) —
 // this is purely the user-driven drag-to-rotate rate, not the objects' own
 // idle self-spin.
@@ -51,7 +53,8 @@ const app = document.getElementById('app');
 const statusEl = document.getElementById('status');
 const bubbleCanvas = document.getElementById('bubbles');
 const bubbleCtx = bubbleCanvas.getContext('2d');
-const hud1Frame = document.getElementById('hud1-frame');
+const btnBack = document.getElementById('btn-back');
+const btnForward = document.getElementById('btn-forward');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(BG_YELLOW_COLOR);
@@ -86,7 +89,7 @@ controls.noPan = true;
 controls.staticMoving = false;
 controls.dynamicDampingFactor = 0.08; // roughly analogous to OrbitControls' dampingFactor
 controls.rotateSpeed = DRAG_ROTATE_SPEED;
-// Real min/max are set per-stage in applyZoomLimits(), scaled to that stage's target distance.
+// Real min/max are set in applyZoomLimits(), scaled to the focused object's close distance.
 controls.minDistance = 0.05;
 controls.maxDistance = 50;
 
@@ -102,6 +105,50 @@ const gltfLoader = new GLTFLoader();
 const objLoader = new OBJLoader();
 const textureLoader = new THREE.TextureLoader();
 const BASE = import.meta.env.BASE_URL;
+
+// The porthole mask's goggle shape, positioned within the HUD's 1920x1080
+// canvas — kept separate from the source SVG's own viewBox, which can change
+// shape freely without needing this box retuned.
+const GOGGLE_MASK_BOX = { x: 120, y: 80, width: 1680, height: 920 };
+
+// Fetches source/layout/goggle.svg (copied verbatim to public/layout/ by
+// scripts/generate-assets.mjs) and swaps it in for the static fallback shape
+// in index.html's porthole mask, so editing that source file and reloading
+// is all it takes to change the goggle cutout — no hardcoded path to update.
+async function loadGoggleMask() {
+  const svgNS = 'http://www.w3.org/2000/svg';
+  try {
+    const res = await fetch(`${BASE}layout/goggle.svg`);
+    if (!res.ok) return;
+    const doc = new DOMParser().parseFromString(await res.text(), 'image/svg+xml');
+    if (doc.querySelector('parsererror')) return;
+    const source = doc.documentElement;
+    const paths = Array.from(source.querySelectorAll('path'));
+    if (!paths.length) return;
+
+    const nested = document.createElementNS(svgNS, 'svg');
+    nested.setAttribute('id', 'hud1-goggle-shape');
+    nested.setAttribute('x', GOGGLE_MASK_BOX.x);
+    nested.setAttribute('y', GOGGLE_MASK_BOX.y);
+    nested.setAttribute('width', GOGGLE_MASK_BOX.width);
+    nested.setAttribute('height', GOGGLE_MASK_BOX.height);
+    nested.setAttribute('viewBox', source.getAttribute('viewBox') || `0 0 ${GOGGLE_MASK_BOX.width} ${GOGGLE_MASK_BOX.height}`);
+    nested.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    // The mask hole is whatever's filled black here, regardless of the
+    // source SVG's own fill/class styling — only its path shapes matter.
+    for (const p of paths) {
+      const path = document.createElementNS(svgNS, 'path');
+      path.setAttribute('d', p.getAttribute('d'));
+      path.setAttribute('fill', 'black');
+      nested.appendChild(path);
+    }
+
+    document.getElementById('hud1-goggle-shape')?.replaceWith(nested);
+  } catch (err) {
+    console.error('goggle mask load failed, keeping fallback shape', err);
+  }
+}
+loadGoggleMask();
 
 // Click-triggered bubbles, drawn on a plain 2D overlay canvas above the WebGL one.
 let bubbleDpr = 1;
@@ -238,13 +285,17 @@ function randomAxis() {
 }
 
 const TARGET_SIZE = 2.2;
+// x/y spacing between neighboring objects on the wall, x TARGET_SIZE — wide
+// enough that a neighbor never bleeds into the close-up frame or the pan
+// tween between two objects.
+const WALL_SPACING = TARGET_SIZE * 3.2;
 
 // Normalize the object to the target size and center its pivot, then wrap it
-// in a group at the world origin with a random orientation and its own slow
-// spin. The wrapping is what makes rotation not shift the object's visual
-// center: the mesh is centered on the group's own origin, so spinning the
-// group in place never moves that origin.
-function prepareObject(object) {
+// in a group at its assigned wall position with a random orientation and its
+// own slow spin. The wrapping is what makes rotation not shift the object's
+// visual center: the mesh is centered on the group's own origin, so spinning
+// the group in place never moves that origin.
+function prepareObject(object, wallPos) {
   const box = new THREE.Box3().setFromObject(object);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
@@ -256,34 +307,19 @@ function prepareObject(object) {
 
   const group = new THREE.Group();
   group.add(object);
+  group.position.copy(wallPos);
   group.rotation.set(randomRange(0, Math.PI * 2), randomRange(0, Math.PI * 2), randomRange(0, Math.PI * 2));
 
-  // Keeps spinning slowly around its own random axis for as long as it's shown.
+  // Keeps spinning slowly around its own random axis for as long as the app runs.
   group.userData.spinAxis = randomAxis();
   group.userData.spinSpeed = randomRange(0.015, 0.05);
 
-  prepareFilterMaterials(group);
+  applyYellowMaterial(group);
   return group;
 }
 
-// clone()'d objects share one material per mesh by default, so tinting a
-// single instance would tint every repeat of that same food. Give each mesh
-// its own material, plus both yellow-stage twins (flat and lit, see below)
-// ready to swap in later.
-function prepareFilterMaterials(group) {
-  group.traverse((child) => {
-    if (!child.isMesh) return;
-    const normal = child.material.clone();
-    child.material = normal;
-    child.userData.normalMaterial = normal;
-    child.userData.yellowMaterialFlat = buildYellowMaterialFlat();
-    child.userData.yellowMaterialLit = buildYellowMaterialLit(normal);
-  });
-}
-
 // A genuine flat-color THREE texture (not just a material.color tweak) —
-// a tiny canvas filled solid, used both for 'solid' mode and as the
-// immediate fallback in 'filter' mode before the real bake is ready.
+// a tiny canvas filled solid, used as the base of the permanent yellow look.
 function createSolidColorTexture(hexColor) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 4;
@@ -295,27 +331,10 @@ function createSolidColorTexture(hexColor) {
   return texture;
 }
 
-// Look mode 2 (and 3, which reuses it): fully unlit (MeshBasicMaterial, not
-// a clone of the PBR material) — scene lighting (ambient/key/fill) never
-// touches it, so it can't be brightened or desaturated by however those are
-// tuned. It also opts out of tone mapping (toneMapped = false), which
-// otherwise runs every color through the ACES curve — even a "correctly
-// exposed" color doesn't come back out unchanged. Between the two, what's on
-// screen is as close as this pipeline can get to YELLOW_COLOR's literal hex
-// value, with zero surface shading (completely flat).
-function buildYellowMaterialFlat() {
-  const yellow = new THREE.MeshBasicMaterial({
-    map: createSolidColorTexture(YELLOW_COLOR),
-    color: 0xffffff, // the texture itself carries the color
-  });
-  yellow.toneMapped = false;
-  return yellow;
-}
-
-// Look mode 1: a lit PBR material carrying over the original material's
-// normal/bump maps, so the scene's lights pick up the object's real surface
-// detail (wrinkles, dents, etc.) on top of the flat yellow color, plus the
-// specular highlight from YELLOW_LIT_ROUGHNESS.
+// Every object's permanent look: a lit PBR material carrying over the
+// original material's normal/bump maps, so the scene's lights pick up the
+// object's real surface detail (wrinkles, dents, etc.) on top of the flat
+// yellow color, plus the specular highlight from YELLOW_LIT_ROUGHNESS.
 function buildYellowMaterialLit(normal) {
   return new THREE.MeshStandardMaterial({
     map: createSolidColorTexture(YELLOW_COLOR),
@@ -331,14 +350,10 @@ function buildYellowMaterialLit(normal) {
   });
 }
 
-function setYellowFilter(group, enabled) {
+function applyYellowMaterial(group) {
   group.traverse((child) => {
     if (!child.isMesh) return;
-    if (!enabled) {
-      child.material = child.userData.normalMaterial;
-      return;
-    }
-    child.material = lookMode === 1 ? child.userData.yellowMaterialLit : child.userData.yellowMaterialFlat;
+    child.material = buildYellowMaterialLit(child.material);
   });
 }
 
@@ -362,158 +377,125 @@ function surfaceDistanceAlong(object, center, dir, boundingRadius) {
   return farOut - hits[0].distance;
 }
 
-// Everything needed to run one object's 3-stage cycle: a fixed center/viewing
-// direction (only the distance along it changes between stages) plus the two
-// distances stage 1 and stages 2/3 sit at.
-function computeCycleView(object) {
+// Everything needed to frame one wall object close-up: its world-space
+// center, a fixed straight-on viewing direction (every object on the wall is
+// framed from the same angle, since the camera only ever pans across the
+// wall's face), and the distance along that direction to sit at.
+function computeCloseView(object) {
   object.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(object);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z) || 1;
   const boundingRadius = size.length() / 2;
-  const fitDistance = maxDim / (2 * Math.tan((Math.PI * camera.fov) / 360));
-
-  const theta = randomRange(0, Math.PI * 2);
-  const phi = randomRange(Math.PI * 0.3, Math.PI * 0.7);
-  const dir = new THREE.Vector3(
-    Math.sin(phi) * Math.cos(theta),
-    Math.cos(phi),
-    Math.sin(phi) * Math.sin(theta)
-  );
+  const dir = new THREE.Vector3(0, 0, 1);
 
   // MIN_SAFE_ZOOM_MULTIPLIER is applied against the *real* surface distance
   // along this specific direction (not the one-size-fits-all bounding
   // sphere), so CLOSE_ZOOM_MULTIPLIER actually has room to pull the framing
-  // in tight on most objects/angles instead of always losing to a floor
-  // sized for the worst-case corner-on view.
+  // in tight on most objects instead of always losing to a floor sized for
+  // the worst-case corner-on view.
   const realSurfaceDistance = surfaceDistanceAlong(object, center, dir, boundingRadius);
   const closeDistance = Math.max(boundingRadius * CLOSE_ZOOM_MULTIPLIER, realSurfaceDistance * MIN_SAFE_ZOOM_MULTIPLIER);
-  const wholeDistance = fitDistance * WHOLE_OBJECT_ZOOM_MARGIN;
 
-  return { center, dir, closeDistance, wholeDistance, fitDistance, boundingRadius };
+  return { center, dir, closeDistance };
 }
 
-// --- Single-object stage cycle state ---------------------------------------
-let templates = [];
-let currentGroup = null;
-let currentTemplateIndex = -1;
-let cycleView = null;
-let stageIndex = 0; // 0: yellow + close-up, 1: yellow + whole object, 2: original texture + whole object
-let activeElapsed = 0; // seconds, excludes time spent dragging or in debug mode
-let stageStartActive = 0; // activeElapsed value when the current object's cycle began
+// --- Wall gallery state -----------------------------------------------------
+let wallObjects = []; // [{ group, center, dir, closeDistance }], one per loaded model
+let currentObjectIndex = -1;
+// Up to LAST_SEEN_LIMIT most-recently-focused object indices (most recent
+// last) — excluded when picking the next random object, so back/forward
+// never immediately repeat something you just saw.
+let lastSeen = [];
+const LAST_SEEN_LIMIT = 3;
+let panTween = null; // { fromPos, toPos, fromTarget, toTarget, start } — eased camera pan between two objects
+// Seconds since the current object was focused (manually or automatically) —
+// once it reaches AUTO_ADVANCE_INTERVAL, the gallery auto-advances as if
+// forward had been clicked. Frozen while dragging or in debug mode.
+let autoAdvanceTimer = 0;
 let dragging = false;
-let zoomTween = null; // { dir, fromDist, toDist, start } — eased distance-only tween leaving stage 1
 
-// Debug mode (toggled with the '0' key): free camera, stage cycle paused, no
-// zoom limits. Default mode (the normal stage cycle) is what the app starts in.
+// Debug mode (toggled with the '0' key): free camera, no zoom limits.
+// Default mode (the wall gallery) is what the app starts in.
 let debugMode = false;
 
-// Look mode (toggled with the '1'/'2'/'3' keys, mutually exclusive):
-//   1 — yellow stage lit smoothly (buildYellowMaterialLit), static yellow background (default)
-//   2 — yellow stage fully flat (buildYellowMaterialFlat), static yellow background
-//   3 — same flat material as mode 2, but the background/porthole-frame color
-//       tracks the object's own stage: black during stages 1-2, yellow at stage 3
-let lookMode = 1;
-
-// Applies the background/porthole-frame color for the current look mode +
-// stage: static yellow outside mode 3, or stage-synced black/yellow in it.
-function applyBackground() {
-  const hex = lookMode === 3 && stageIndex <= 1 ? BG_BLACK_COLOR : BG_YELLOW_COLOR;
-  scene.background.setHex(hex);
-  if (hud1Frame) hud1Frame.setAttribute('fill', `#${hex.toString(16).padStart(6, '0')}`);
-}
-
-function setLookMode(mode) {
-  if (lookMode === mode) return;
-  lookMode = mode;
-  // If the object is currently showing a yellow stage, swap its material
-  // immediately instead of waiting for the next stage transition.
-  if (currentGroup && stageIndex <= 1) setYellowFilter(currentGroup, true);
-  applyBackground();
-}
-
-function stageTargetDistance() {
-  return stageIndex === 0 ? cycleView.closeDistance : cycleView.wholeDistance;
-}
-
-// How far the user can zoom in/out from whichever stage's target distance —
-// see ZOOM_RANGE_FRACTION above.
+// How far the user can zoom in/out from the focused object's close-up
+// distance — see ZOOM_RANGE_FRACTION above.
 function applyZoomLimits() {
-  if (debugMode || !cycleView) return;
-  const target = stageTargetDistance();
+  if (debugMode || currentObjectIndex < 0) return;
+  const target = wallObjects[currentObjectIndex].closeDistance;
   controls.minDistance = target * (1 - ZOOM_RANGE_FRACTION);
   controls.maxDistance = target * (1 + ZOOM_RANGE_FRACTION);
-}
-
-function startZoomTween(toDist) {
-  const dir = camera.position.clone().sub(controls.target);
-  const fromDist = dir.length() || toDist;
-  dir.normalize();
-  zoomTween = { dir, fromDist, toDist, start: elapsedTime };
 }
 
 function easeInOutCubic(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
-// Advances the active zoom tween; called instead of controls.update() while
-// one is in progress so TrackballControls doesn't fight the manual tween. Only
-// the distance along the fixed viewing direction changes — the object itself
-// never moves, so no curve/bounce is needed here, unlike the old cross-object
-// flights this replaced.
-function updateZoomTween() {
-  const t = Math.min(1, (elapsedTime - zoomTween.start) / ZOOM_STAGE_TRANSITION_DURATION);
-  const dist = THREE.MathUtils.lerp(zoomTween.fromDist, zoomTween.toDist, easeInOutCubic(t));
-  camera.position.copy(controls.target).addScaledVector(zoomTween.dir, dist);
-  camera.lookAt(controls.target);
-  currentZoomDistance = dist;
-  if (t >= 1) zoomTween = null;
-}
-
-function pickNextTemplateIndex() {
-  if (templates.length <= 1) return 0;
-  let idx;
-  do {
-    idx = Math.floor(Math.random() * templates.length);
-  } while (idx === currentTemplateIndex);
-  return idx;
-}
-
-// Swap in a new random object (never the one just shown) and start its cycle
-// fresh at stage 0 (yellow + close-up), cutting the camera straight there.
-function showNextObject() {
-  if (currentGroup) scene.remove(currentGroup);
-
-  currentTemplateIndex = pickNextTemplateIndex();
-  const instance = templates[currentTemplateIndex].clone(true);
-  currentGroup = prepareObject(instance);
-  scene.add(currentGroup);
-  setYellowFilter(currentGroup, true);
-
-  cycleView = computeCycleView(currentGroup);
-  stageIndex = 0;
-  stageStartActive = activeElapsed;
-  zoomTween = null;
-  applyBackground();
-
-  camera.near = cycleView.closeDistance / 100;
-  camera.far = cycleView.fitDistance * 100;
-  camera.updateProjectionMatrix();
-
-  controls.target.copy(cycleView.center);
-  camera.position.copy(cycleView.center).addScaledVector(cycleView.dir, cycleView.closeDistance);
-  // TrackballControls lets the user roll the camera's up vector freely while
-  // examining an object (that's what makes rotation never get stuck) — reset
-  // it here so every new object starts from a clean, upright framing instead
-  // of carrying over whatever roll was left from the previous one.
+function startPanTween(toPos, toTarget) {
   camera.up.set(0, 1, 0);
+  panTween = {
+    fromPos: camera.position.clone(),
+    toPos: toPos.clone(),
+    fromTarget: controls.target.clone(),
+    toTarget: toTarget.clone(),
+    start: elapsedTime,
+  };
+}
+
+// Advances the active camera pan; called instead of controls.update() while
+// one is in progress so TrackballControls doesn't fight the manual tween.
+// Both the camera position and orbit target are lerped directly in 3D — the
+// camera stays at close-up zoom throughout the move across the wall instead
+// of zooming out and back in.
+function updatePanTween() {
+  const t = Math.min(1, (elapsedTime - panTween.start) / PAN_TRANSITION_DURATION);
+  const e = easeInOutCubic(t);
+  camera.position.lerpVectors(panTween.fromPos, panTween.toPos, e);
+  controls.target.lerpVectors(panTween.fromTarget, panTween.toTarget, e);
   camera.lookAt(controls.target);
-  currentZoomDistance = cycleView.closeDistance;
+  currentZoomDistance = camera.position.distanceTo(controls.target);
+  if (t >= 1) panTween = null;
+}
+
+function rememberSeen(index) {
+  lastSeen.push(index);
+  if (lastSeen.length > LAST_SEEN_LIMIT) lastSeen.shift();
+}
+
+// Picks a random wall object, excluding whichever ones are in lastSeen.
+function pickNextObjectIndex() {
+  const candidates = wallObjects.map((_, i) => i).filter((i) => !lastSeen.includes(i));
+  const pool = candidates.length ? candidates : wallObjects.map((_, i) => i).filter((i) => i !== currentObjectIndex);
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+// Points the camera at wallObjects[index]'s close-up framing. Cuts instantly
+// for the very first object; every later call eases the camera across the
+// wall from wherever it currently is, staying at close-up zoom the whole way.
+function focusObject(index, { instant = false } = {}) {
+  currentObjectIndex = index;
+  rememberSeen(index);
+  autoAdvanceTimer = 0;
+  const view = wallObjects[index];
+
+  const toPos = view.center.clone().addScaledVector(view.dir, view.closeDistance);
+  const toTarget = view.center;
+
+  panTween = null;
+  if (instant) {
+    camera.up.set(0, 1, 0);
+    camera.position.copy(toPos);
+    controls.target.copy(toTarget);
+    camera.lookAt(controls.target);
+    currentZoomDistance = view.closeDistance;
+  } else {
+    startPanTween(toPos, toTarget);
+  }
 
   // Leave bobOffset/bobVelocity as they are (don't snap to 0) — bobTarget=0
   // lets the existing spring ease any residual dip out smoothly.
-  dipAmount = cycleView.closeDistance * 0.04;
+  dipAmount = view.closeDistance * 0.04;
   bobTarget = 0;
   currentStiffness = SPRING_STIFFNESS_RISE;
   currentDamping = SPRING_DAMPING_RISE;
@@ -521,15 +503,36 @@ function showNextObject() {
   applyZoomLimits();
 }
 
+// Places one instance of every loaded model on the wall (same z, spread
+// across x/y in a grid, spaced by WALL_SPACING) and pre-computes each one's
+// close-up framing.
+function buildWall(objects) {
+  const cols = Math.ceil(Math.sqrt(objects.length));
+  const rows = Math.ceil(objects.length / cols);
+  return objects.map((object, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const wallPos = new THREE.Vector3(
+      (col - (cols - 1) / 2) * WALL_SPACING,
+      -(row - (rows - 1) / 2) * WALL_SPACING,
+      0
+    );
+    const group = prepareObject(object, wallPos);
+    scene.add(group);
+    return { group, ...computeCloseView(group) };
+  });
+}
+
 controls.addEventListener('start', () => {
   dragging = true;
-  // Don't let the manual zoom tween and user-driven orbiting fight each
+  // Don't let the manual pan tween and user-driven orbiting fight each
   // other — finish the tween instantly and hand off to TrackballControls.
-  if (zoomTween) {
-    camera.position.copy(controls.target).addScaledVector(zoomTween.dir, zoomTween.toDist);
+  if (panTween) {
+    camera.position.copy(panTween.toPos);
+    controls.target.copy(panTween.toTarget);
     camera.lookAt(controls.target);
-    currentZoomDistance = zoomTween.toDist;
-    zoomTween = null;
+    currentZoomDistance = camera.position.distanceTo(controls.target);
+    panTween = null;
   }
   bobTarget = dipAmount;
   currentStiffness = SPRING_STIFFNESS_RISE;
@@ -544,7 +547,7 @@ controls.addEventListener('end', () => {
 
 function setDebugMode(on) {
   debugMode = on;
-  zoomTween = null;
+  panTween = null;
   if (debugMode) {
     // Same generic bounds the controls start with before any object is shown.
     controls.minDistance = 0.05;
@@ -556,38 +559,10 @@ function setDebugMode(on) {
 
 window.addEventListener('keydown', (e) => {
   if (e.key === '0') setDebugMode(!debugMode);
-  else if (e.key === '1') setLookMode(1);
-  else if (e.key === '2') setLookMode(2);
-  else if (e.key === '3') setLookMode(3);
 });
 
-// Steps the stage timer (paused while dragging or in debug mode) and either
-// runs the zoom tween or hands control to TrackballControls for the frame.
-function updateCycle(dt) {
-  if (!dragging && !debugMode) activeElapsed += dt;
-
-  if (!debugMode && cycleView) {
-    const t = activeElapsed - stageStartActive;
-    if (t >= STAGE_DURATION * 3) {
-      showNextObject();
-    } else {
-      const newStage = Math.min(2, Math.floor(t / STAGE_DURATION));
-      if (newStage !== stageIndex) {
-        stageIndex = newStage;
-        if (stageIndex === 1) startZoomTween(cycleView.wholeDistance);
-        if (stageIndex === 2) setYellowFilter(currentGroup, false);
-        applyZoomLimits();
-        applyBackground();
-      }
-    }
-  }
-
-  if (zoomTween) {
-    updateZoomTween();
-  } else {
-    controls.update();
-  }
-}
+btnBack.addEventListener('click', () => focusObject(pickNextObjectIndex()));
+btnForward.addEventListener('click', () => focusObject(pickNextObjectIndex()));
 
 function loadModel(model) {
   return new Promise((resolve, reject) => {
@@ -631,13 +606,14 @@ async function init() {
     )
   );
 
-  templates = objects.filter(Boolean);
-  if (!templates.length) {
+  const loaded = objects.filter(Boolean);
+  if (!loaded.length) {
     statusEl.textContent = '모델을 불러오지 못했습니다.';
     return;
   }
 
-  showNextObject();
+  wallObjects = buildWall(loaded);
+  focusObject(Math.floor(Math.random() * wallObjects.length), { instant: true });
   statusEl.style.display = 'none';
 }
 
@@ -658,7 +634,16 @@ renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
   elapsedTime += dt;
 
-  updateCycle(dt);
+  if (!dragging && !debugMode && currentObjectIndex >= 0) {
+    autoAdvanceTimer += dt;
+    if (autoAdvanceTimer >= AUTO_ADVANCE_INTERVAL) focusObject(pickNextObjectIndex());
+  }
+
+  if (panTween) {
+    updatePanTween();
+  } else {
+    controls.update();
+  }
 
   // Spring the Y offset toward bobTarget: rises on drag start, eases back down
   // (with a little overshoot) on release.
@@ -677,9 +662,9 @@ renderer.setAnimationLoop(() => {
   const wiggleYaw = WIGGLE_ROT_AMP * Math.sin(wt * 0.09 + 0.8);
   const wiggleTilt = WIGGLE_ROT_AMP * 0.7 * Math.sin(wt * 0.12 + 3.4);
 
-  // The object keeps spinning slowly around its own fixed random axis.
-  if (currentGroup) {
-    currentGroup.rotateOnAxis(currentGroup.userData.spinAxis, currentGroup.userData.spinSpeed * dt);
+  // Every object on the wall keeps spinning slowly around its own fixed random axis.
+  for (const { group } of wallObjects) {
+    group.rotateOnAxis(group.userData.spinAxis, group.userData.spinSpeed * dt);
   }
 
   // Nudge for this render only, then undo it — otherwise TrackballControls reads

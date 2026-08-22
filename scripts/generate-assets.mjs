@@ -7,6 +7,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 export const SOURCE_DIR = path.join(ROOT, 'source');
 const OUTPUT_DIR = path.join(ROOT, 'public', 'models');
+const LAYOUT_SOURCE_DIR = path.join(SOURCE_DIR, 'layout');
+const LAYOUT_OUTPUT_DIR = path.join(ROOT, 'public', 'layout');
 
 const MESH_EXTS = new Set(['.obj', '.glb', '.gltf']);
 const IMAGE_EXTS = new Set(['.tif', '.tiff', '.png', '.jpg', '.jpeg']);
@@ -100,9 +102,29 @@ async function convertTexture(srcPath, destPathNoExt, role) {
   return dest;
 }
 
+// Mirrors every *.svg straight from source/layout into public/layout, so
+// editing a layout SVG (e.g. the goggle porthole shape) and reloading is all
+// it takes for the app — which fetches these at runtime — to pick it up.
+async function copyLayoutSvgs() {
+  await fs.rm(LAYOUT_OUTPUT_DIR, { recursive: true, force: true });
+  let entries = [];
+  try {
+    entries = await fs.readdir(LAYOUT_SOURCE_DIR, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const svgFiles = entries.filter((e) => e.isFile() && path.extname(e.name).toLowerCase() === '.svg');
+  if (!svgFiles.length) return;
+  await fs.mkdir(LAYOUT_OUTPUT_DIR, { recursive: true });
+  await Promise.all(
+    svgFiles.map((e) => fs.copyFile(path.join(LAYOUT_SOURCE_DIR, e.name), path.join(LAYOUT_OUTPUT_DIR, e.name)))
+  );
+}
+
 export async function generateAssets() {
   await fs.rm(OUTPUT_DIR, { recursive: true, force: true });
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
+  await copyLayoutSvgs();
 
   let allFiles = [];
   try {

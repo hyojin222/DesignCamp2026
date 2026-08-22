@@ -9,7 +9,7 @@
         margin: 0;
         height: 100%;
         overflow: hidden;
-        background: #FFF200;
+        background: #000000;
         font-family: system-ui, -apple-system, "Malgun Gothic", sans-serif;
       }
       #app {
@@ -49,6 +49,48 @@
         width: 100%;
         height: 100%;
       }
+      #ui-controls {
+        position: fixed;
+        inset: 0;
+        z-index: 200;
+        pointer-events: none;
+      }
+      .ui-btn {
+        position: absolute;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 56px;
+        height: 56px;
+        padding: 0;
+        border: none;
+        background: none;
+        color: #1f1f1f;
+        cursor: pointer;
+        pointer-events: auto;
+        transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .ui-btn svg {
+        width: 26px;
+        height: 26px;
+        fill: currentColor;
+      }
+      .ui-btn--back {
+        top: 50%;
+        left: 32px;
+        transform: translateY(-50%);
+      }
+      .ui-btn--back:hover {
+        transform: translateY(-50%) translateX(-8px);
+      }
+      .ui-btn--forward {
+        top: 50%;
+        right: 32px;
+        transform: translateY(-50%);
+      }
+      .ui-btn--forward:hover {
+        transform: translateY(-50%) translateX(8px);
+      }
     </style>
   </head>
   <body>
@@ -56,19 +98,39 @@
       <canvas id="bubbles"></canvas>
       <div id="status">불러오는 중...</div>
 
-      <!-- Circular porthole frame. Its fill (id="hud1-frame") is driven from
-           main.js, in sync with the look-mode/stage background color. -->
+      <!-- Goggle-shaped porthole frame. Its fill (id="hud1-frame") is driven
+           from main.js, in sync with the scene background color. -->
       <div id="hud-1">
         <svg viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
           <defs>
             <mask id="hud1-porthole-mask">
               <rect width="1920" height="1080" fill="white" />
-              <circle cx="968" cy="555" r="670" fill="black" />
+              <!-- Fallback shape for before main.js fetches the live
+                   source/layout/goggle.svg (see loadGoggleMask() there) and
+                   replaces this element outright, so an edit to that file
+                   shows up on the next reload without touching this markup. -->
+              <svg id="hud1-goggle-shape" x="120" y="80" width="1680" height="920" viewBox="0 0 1837.74 998.11" preserveAspectRatio="xMidYMid meet">
+                <path
+                  fill="black"
+                  d="M1807.29,0H30.45C13.63,0,0,13.63,0,30.45v861.76c0,58.49,47.41,105.9,105.9,105.9h529.87c42.39,0,81.55-22.67,102.66-59.43,30.86-53.74,71.61-124.47,71.61-124.47,48.37-83.78,169.29-83.78,217.66,0,0,0,40.74,70.73,71.61,124.47,21.11,36.76,60.27,59.43,102.66,59.43h529.87c58.49,0,105.9-47.41,105.9-105.9V30.45c0-16.82-13.63-30.45-30.45-30.45Z"
+                />
+              </svg>
             </mask>
           </defs>
 
-          <rect id="hud1-frame" width="1920" height="1080" fill="#FFF200" mask="url(#hud1-porthole-mask)" />
+          <rect id="hud1-frame" width="1920" height="1080" fill="#ffffff" mask="url(#hud1-porthole-mask)" />
         </svg>
+      </div>
+
+      <!-- Wall-gallery controls: back/forward jump the camera to a
+           different random object on the wall. -->
+      <div id="ui-controls">
+        <button id="btn-back" class="ui-btn ui-btn--back" type="button" aria-label="이전 오브제">
+          <svg viewBox="0 -960 960 960"><path d="M640-80 240-480l400-400 71 71-329 329 329 329-71 71Z"/></svg>
+        </button>
+        <button id="btn-forward" class="ui-btn ui-btn--forward" type="button" aria-label="다음 오브제">
+          <svg viewBox="0 -960 960 960"><path d="m321-80-71-71 329-329-329-329 71-71 400 400L321-80Z"/></svg>
+        </button>
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>
