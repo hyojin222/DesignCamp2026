@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 
 // ============================================================================
 // Look & feel tuning — kept together here since these get tweaked a lot.
@@ -41,6 +41,10 @@ const WHOLE_OBJECT_ZOOM_MARGIN = 1.25; // stage-2/3 whole-object distance, x the
 // as a +/-fraction of it.
 const ZOOM_RANGE_FRACTION = 0.1;
 const ZOOM_STAGE_TRANSITION_DURATION = 0.8; // seconds, eased zoom-out leaving stage 1
+// How much camera rotation a drag produces (TrackballControls' rotateSpeed) —
+// this is purely the user-driven drag-to-rotate rate, not the objects' own
+// idle self-spin.
+const DRAG_ROTATE_SPEED = 2.5;
 // ============================================================================
 
 const app = document.getElementById('app');
@@ -71,11 +75,17 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = RENDER_EXPOSURE;
 app.appendChild(renderer.domElement);
 
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
-controls.rotateSpeed = 0.8;
-controls.enablePan = false;
+// TrackballControls instead of OrbitControls: OrbitControls clamps its polar
+// angle to [0, pi] (can't rotate past looking straight up/down), which reads
+// as rotation suddenly "getting stuck" if you keep dragging the same way.
+// TrackballControls rotates via axis-angle/quaternion instead of spherical
+// coordinates, so there's no polar singularity — rotation stays free in any
+// direction indefinitely.
+const controls = new TrackballControls(camera, renderer.domElement);
+controls.noPan = true;
+controls.staticMoving = false;
+controls.dynamicDampingFactor = 0.08; // roughly analogous to OrbitControls' dampingFactor
+controls.rotateSpeed = DRAG_ROTATE_SPEED;
 // Real min/max are set per-stage in applyZoomLimits(), scaled to that stage's target distance.
 controls.minDistance = 0.05;
 controls.maxDistance = 50;
@@ -448,7 +458,7 @@ function easeInOutCubic(t) {
 }
 
 // Advances the active zoom tween; called instead of controls.update() while
-// one is in progress so OrbitControls doesn't fight the manual tween. Only
+// one is in progress so TrackballControls doesn't fight the manual tween. Only
 // the distance along the fixed viewing direction changes — the object itself
 // never moves, so no curve/bounce is needed here, unlike the old cross-object
 // flights this replaced.
@@ -493,6 +503,11 @@ function showNextObject() {
 
   controls.target.copy(cycleView.center);
   camera.position.copy(cycleView.center).addScaledVector(cycleView.dir, cycleView.closeDistance);
+  // TrackballControls lets the user roll the camera's up vector freely while
+  // examining an object (that's what makes rotation never get stuck) — reset
+  // it here so every new object starts from a clean, upright framing instead
+  // of carrying over whatever roll was left from the previous one.
+  camera.up.set(0, 1, 0);
   camera.lookAt(controls.target);
   currentZoomDistance = cycleView.closeDistance;
 
@@ -509,7 +524,7 @@ function showNextObject() {
 controls.addEventListener('start', () => {
   dragging = true;
   // Don't let the manual zoom tween and user-driven orbiting fight each
-  // other — finish the tween instantly and hand off to OrbitControls.
+  // other — finish the tween instantly and hand off to TrackballControls.
   if (zoomTween) {
     camera.position.copy(controls.target).addScaledVector(zoomTween.dir, zoomTween.toDist);
     camera.lookAt(controls.target);
@@ -547,7 +562,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 // Steps the stage timer (paused while dragging or in debug mode) and either
-// runs the zoom tween or hands control to OrbitControls for the frame.
+// runs the zoom tween or hands control to TrackballControls for the frame.
 function updateCycle(dt) {
   if (!dragging && !debugMode) activeElapsed += dt;
 
@@ -633,6 +648,10 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(app.clientWidth, app.clientHeight);
   resizeBubbleCanvas();
+  // Unlike OrbitControls, TrackballControls caches the canvas's screen-space
+  // bounds (for mapping pointer position to rotation) and needs this called
+  // explicitly whenever those bounds change.
+  controls.handleResize();
 });
 
 renderer.setAnimationLoop(() => {
@@ -663,9 +682,9 @@ renderer.setAnimationLoop(() => {
     currentGroup.rotateOnAxis(currentGroup.userData.spinAxis, currentGroup.userData.spinSpeed * dt);
   }
 
-  // Nudge for this render only, then undo it — otherwise OrbitControls reads the
-  // offset position back as the "real" camera on the next frame and it compounds
-  // into runaway drift instead of a clean spring motion.
+  // Nudge for this render only, then undo it — otherwise TrackballControls reads
+  // the offset position back as the "real" camera on the next frame and it
+  // compounds into runaway drift instead of a clean spring motion.
   camera.position.x += wiggleX;
   camera.position.y += bobOffset + wiggleY;
   camera.rotateY(wiggleYaw);
