@@ -3,3 +3,15 @@ dist/
 .DS_Store
 public/models/
 public/layout/
+public/icon/
+public/sound/
+
+# Undecimated source meshes (100s of MB each) — see MAX_MESH_BYTES in
+# scripts/generate-assets.mjs, which already skips these at build time.
+source/3dmodel/cheeseburger/
+source/3dmodel/cookie2/
+source/3dmodel/egg/
+source/3dmodel/labyrinth/
+source/3dmodel/pizza/
+source/3dmodel/pumpkin/
+source/3dmodel/toast/

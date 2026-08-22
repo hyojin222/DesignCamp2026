@@ -64,8 +64,13 @@ const WHEEL_ZOOM_SPEED = 0.0015;
 
 const app = document.getElementById('app');
 const statusEl = document.getElementById('status');
-const btnBack = document.getElementById('btn-back');
-const btnForward = document.getElementById('btn-forward');
+const wordListEl = document.getElementById('word-list');
+const btnRandomObject = document.getElementById('btn-random-object');
+const cameraXEl = document.getElementById('camera-x');
+const cameraYEl = document.getElementById('camera-y');
+const hud1Svg = document.getElementById('hud1-svg');
+const hud1MaskBg = document.getElementById('hud1-mask-bg');
+const hud1Frame = document.getElementById('hud1-frame');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(BG_YELLOW_COLOR);
@@ -119,17 +124,69 @@ const objLoader = new OBJLoader();
 const textureLoader = new THREE.TextureLoader();
 const BASE = import.meta.env.BASE_URL;
 
-// The porthole mask's goggle shape, positioned within the HUD's 1920x1080
-// canvas — kept separate from the source SVG's own viewBox, which can change
-// shape freely without needing this box retuned.
-const GOGGLE_MASK_BOX = { x: 120, y: 80, width: 1680, height: 920 };
+// Looping background music (copied verbatim to public/sound/ by
+// scripts/generate-assets.mjs). Browsers block audio autoplay until the user
+// has interacted with the page at least once, so a blocked first attempt
+// just waits for that — no visible retry/prompt needed, it starts silently
+// the moment the user does anything (click, drag, key press).
+const BGM_VOLUME = 0.5;
+const bgm = new Audio(`${BASE}sound/samuelfjohanns-spaceshiptexture.mp3`);
+bgm.loop = true;
+bgm.volume = BGM_VOLUME;
+bgm.play().catch(() => {
+  const resume = () => bgm.play().catch(() => {});
+  window.addEventListener('pointerdown', resume, { once: true });
+  window.addEventListener('keydown', resume, { once: true });
+});
+
+// Fixed height of the HUD's coordinate space; the width instead tracks the
+// window's actual aspect ratio (see syncHudViewBox()) so the viewBox's own
+// aspect ratio always matches the window's — otherwise preserveAspectRatio's
+// "slice" has overflow to crop on whichever axis the two ratios disagree on,
+// which is what was cutting the now-edge-to-edge goggle shape's left/right
+// sides on any window that wasn't exactly 16:9.
+const HUD_HEIGHT = 1080;
+let hudViewBoxWidth = HUD_HEIGHT * (app.clientWidth / app.clientHeight);
+// The fetched goggle SVG's own height/width ratio, so its box can be
+// recomputed on resize without re-fetching. Starts out matching the static
+// fallback shape's ratio (998.11/1837.74) until the real one loads.
+let goggleAspectRatio = 998.11 / 1837.74;
+const GOGGLE_MASK_TOP_MARGIN = 40; // gap above the goggle, in HUD units (HUD_HEIGHT tall)
+// Left/right margin as a fraction of the (dynamic) HUD width, so it scales
+// with the window instead of being a fixed number of units.
+const GOGGLE_MASK_SIDE_MARGIN_FRACTION = 0.05;
+
+// Sizes the goggle shape to fit within its margins — called both right after
+// it loads and on every resize.
+function applyGoggleMaskBox() {
+  const shape = document.getElementById('hud1-goggle-shape');
+  if (!shape) return;
+  const sideMargin = hudViewBoxWidth * GOGGLE_MASK_SIDE_MARGIN_FRACTION;
+  const width = hudViewBoxWidth - sideMargin * 2;
+  shape.setAttribute('x', sideMargin);
+  shape.setAttribute('y', GOGGLE_MASK_TOP_MARGIN);
+  shape.setAttribute('width', width);
+  shape.setAttribute('height', width * goggleAspectRatio);
+}
+
+// Keeps the HUD's viewBox width (and everything sized off it) matched to the
+// window's actual aspect ratio — see the HUD_HEIGHT comment above.
+function syncHudViewBox() {
+  hudViewBoxWidth = HUD_HEIGHT * (app.clientWidth / app.clientHeight);
+  hud1Svg.setAttribute('viewBox', `0 0 ${hudViewBoxWidth} ${HUD_HEIGHT}`);
+  hud1MaskBg.setAttribute('width', hudViewBoxWidth);
+  hud1Frame.setAttribute('width', hudViewBoxWidth);
+  applyGoggleMaskBox();
+}
+syncHudViewBox();
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
 // Fetches source/layout/goggle.svg (copied verbatim to public/layout/ by
 // scripts/generate-assets.mjs) and swaps it in for the static fallback shape
 // in index.html's porthole mask, so editing that source file and reloading
 // is all it takes to change the goggle cutout — no hardcoded path to update.
 async function loadGoggleMask() {
-  const svgNS = 'http://www.w3.org/2000/svg';
   try {
     const res = await fetch(`${BASE}layout/goggle.svg`);
     if (!res.ok) return;
@@ -139,32 +196,69 @@ async function loadGoggleMask() {
     const paths = Array.from(source.querySelectorAll('path'));
     if (!paths.length) return;
 
-    const nested = document.createElementNS(svgNS, 'svg');
+    const viewBoxParts = (source.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
+    const [, , vbWidth, vbHeight] = viewBoxParts.length === 4 ? viewBoxParts : [0, 0, 1, 1];
+    if (vbWidth > 0) goggleAspectRatio = vbHeight / vbWidth;
+
+    const nested = document.createElementNS(SVG_NS, 'svg');
     nested.setAttribute('id', 'hud1-goggle-shape');
-    nested.setAttribute('x', GOGGLE_MASK_BOX.x);
-    nested.setAttribute('y', GOGGLE_MASK_BOX.y);
-    nested.setAttribute('width', GOGGLE_MASK_BOX.width);
-    nested.setAttribute('height', GOGGLE_MASK_BOX.height);
-    nested.setAttribute('viewBox', source.getAttribute('viewBox') || `0 0 ${GOGGLE_MASK_BOX.width} ${GOGGLE_MASK_BOX.height}`);
+    nested.setAttribute('viewBox', source.getAttribute('viewBox') || `0 0 1 ${goggleAspectRatio}`);
     nested.setAttribute('preserveAspectRatio', 'xMidYMid meet');
     // The mask hole is whatever's filled black here, regardless of the
     // source SVG's own fill/class styling — only its path shapes matter.
     for (const p of paths) {
-      const path = document.createElementNS(svgNS, 'path');
+      const path = document.createElementNS(SVG_NS, 'path');
       path.setAttribute('d', p.getAttribute('d'));
       path.setAttribute('fill', 'black');
       nested.appendChild(path);
     }
 
     document.getElementById('hud1-goggle-shape')?.replaceWith(nested);
+    applyGoggleMaskBox();
   } catch (err) {
     console.error('goggle mask load failed, keeping fallback shape', err);
   }
 }
 loadGoggleMask();
 
+// Fetches an icon SVG (copied verbatim to public/icon/ by
+// scripts/generate-assets.mjs) and swaps it in for whatever fallback markup
+// is currently inside `button`, so editing the source icon and reloading is
+// all it takes — no hardcoded path to update. Color comes entirely from this
+// button's own CSS (`fill: currentColor`-style inheritance): the source
+// SVG's own fill is dropped, same reasoning as the goggle mask above.
+async function loadButtonIcon(button, url) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return;
+    const doc = new DOMParser().parseFromString(await res.text(), 'image/svg+xml');
+    if (doc.querySelector('parsererror')) return;
+    const source = doc.documentElement;
+    const viewBox = source.getAttribute('viewBox');
+    const paths = Array.from(source.querySelectorAll('path'));
+    if (!viewBox || !paths.length) return;
+
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', viewBox);
+    for (const p of paths) {
+      const path = document.createElementNS(SVG_NS, 'path');
+      path.setAttribute('d', p.getAttribute('d'));
+      svg.appendChild(path);
+    }
+    button.replaceChildren(svg);
+  } catch (err) {
+    console.error(`icon load failed for ${url}, keeping fallback icon`, err);
+  }
+}
+loadButtonIcon(btnRandomObject, `${BASE}icon/re.svg`);
+
 const clock = new THREE.Clock();
 let elapsedTime = 0;
+// Throttles the camera x/y readout's own update rate well below the render
+// loop's ~60fps — it shows the *live*, wiggle-included position, and at full
+// frame rate the sway makes the digits change too fast to actually read.
+const COORD_UPDATE_INTERVAL = 1 / 12;
+let lastCoordUpdateTime = -Infinity;
 // The fall is a touch faster (higher stiffness) than the rise, and damping
 // differs so the rise stays smooth while the fall has a visible bounce.
 const SPRING_STIFFNESS_RISE = 6;
@@ -409,6 +503,78 @@ function pickNextObjectIndex() {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+// Bottom-left word list: a fixed 5x2 grid of these 10 foods (a curated
+// subset of the wall — some wall objects, like croissant, just have no entry
+// here and never get highlighted), each with the same word translated into
+// four languages. Every focusObject() call below re-picks one language for
+// the *whole* list (never mixed per word) and re-types every word from
+// scratch, so the list always reflects the currently-focused wall object.
+// Covers every wall object (see buildWall()), not just a curated subset —
+// otherwise whichever objects were missing an entry would never get the
+// "active" highlight no matter which language happened to be showing,
+// which read as a per-language bug even though it was really per-object.
+const WORD_LIST_ITEMS = [
+  { id: 'anise', words: { ru: 'анис', th: 'ยี่หร่า', ja: 'アニス', zh: '茴香', ar: 'يانسون', he: 'אניס', el: 'γλυκάνισο', ka: 'ანისი', si: 'සොම්පු', fr: 'anis' } },
+  { id: 'avocado', words: { ru: 'авокадо', th: 'อะโวคาโด', ja: 'アボカド', zh: '牛油果', ar: 'أفوكادو', he: 'אבוקדו', el: 'αβοκάντο', ka: 'ავოკადო', si: 'අලිගැටපේර', fr: 'avocat' } },
+  { id: 'bread', words: { ru: 'хлеб', th: 'ขนมปัง', ja: 'パン', zh: '面包', ar: 'خبز', he: 'לחם', el: 'ψωμί', ka: 'პური', si: 'පාන්', fr: 'pain' } },
+  { id: 'cookie', words: { ru: 'печенье', th: 'คุกกี้', ja: 'クッキー', zh: '曲奇', ar: 'بسكويت', he: 'עוגייה', el: 'μπισκότο', ka: 'ბისკვიტი', si: 'බිස්කට්', fr: 'biscuit' } },
+  { id: 'corn', words: { ru: 'кукуруза', th: 'ข้าวโพด', ja: 'とうもろこし', zh: '玉米', ar: 'ذرة', he: 'תירס', el: 'καλαμπόκι', ka: 'სიმინდი', si: 'බඩඉරිඟු', fr: 'maïs' } },
+  { id: 'grapefruit', words: { ru: 'грейпфрут', th: 'เกรปฟรุต', ja: 'グレープフルーツ', zh: '葡萄柚', ar: 'جريب فروت', he: 'אשכולית', el: 'γκρέιπφρουτ', ka: 'გრეიფრუტი', si: 'ග්‍රේප් ෆෘට්', fr: 'pamplemousse' } },
+  { id: 'strawberry', words: { ru: 'клубника', th: 'สตรอว์เบอร์รี', ja: 'いちご', zh: '草莓', ar: 'فراولة', he: 'תות שדה', el: 'φράουλα', ka: 'მარწყვი', si: 'ස්ට්‍රෝබෙරි', fr: 'fraise' } },
+  { id: 'sushi', words: { ru: 'суши', th: 'ซูชิ', ja: '寿司', zh: '寿司', ar: 'سوشي', he: 'סושי', el: 'σούσι', ka: 'სუში', si: 'සුෂි', fr: 'sushi' } },
+  { id: 'tartlet', words: { ru: 'тарталетки', th: 'ทาร์ต', ja: 'タルト', zh: '挞', ar: 'تارت', he: 'טרטלט', el: 'ταρτάκι', ka: 'ტარტი', si: 'ටාට්', fr: 'tartelette' } },
+  { id: 'chicken-leg-smoked', words: { ru: 'курица', th: 'ไก่', ja: '鶏肉', zh: '鸡肉', ar: 'دجاج', he: 'עוף', el: 'κοτόπουλο', ka: 'ქათამი', si: 'කුකුල් මස්', fr: 'poulet' } },
+  { id: 'croissant', words: { ru: 'круассан', th: 'ครัวซองต์', ja: 'クロワッサン', zh: '牛角包', ar: 'كرواسون', he: 'קרואסון', el: 'κρουασάν', ka: 'კრუასანი', si: 'ක්‍රුවසෝන්', fr: 'croissant' } },
+  { id: 'donut', words: { ru: 'пончик', th: 'โดนัท', ja: 'ドーナツ', zh: '甜甜圈', ar: 'دونات', he: 'דונאט', el: 'ντόνατ', ka: 'დონატი', si: 'ඩෝනට්', fr: 'beignet' } },
+  { id: 'flyagaric', words: { ru: 'гриб', th: 'เห็ด', ja: 'きのこ', zh: '蘑菇', ar: 'فطر', he: 'פטריה', el: 'μανιτάρι', ka: 'სოკო', si: 'හතු', fr: 'champignon' } },
+];
+const WORD_LIST_LANGUAGES = ['ru', 'th', 'ja', 'zh', 'ar', 'he', 'el', 'ka', 'si', 'fr'];
+const WORD_TYPE_INTERVAL = 45; // ms per character revealed
+// Starts at a random language, then advances one at a time (wrapping) on
+// every renderWordList() call instead of re-rolling fully at random — a
+// fresh random pick each time repeated languages far more often than felt
+// right with this many options. -1 so the very first render's +1 lands on
+// this random starting point instead of skipping past it.
+let wordListLanguageIndex = Math.floor(Math.random() * WORD_LIST_LANGUAGES.length) - 1;
+
+const wordListEntries = WORD_LIST_ITEMS.map((item) => {
+  const el = document.createElement('span');
+  el.className = 'word-item';
+  wordListEl.appendChild(el);
+  return { id: item.id, words: item.words, el, typeTimer: null };
+});
+
+function typewriteWord(entry, text) {
+  if (entry.typeTimer) clearInterval(entry.typeTimer);
+  entry.el.textContent = '';
+  let i = 0;
+  entry.typeTimer = setInterval(() => {
+    i++;
+    entry.el.textContent = text.slice(0, i);
+    if (i >= text.length) clearInterval(entry.typeTimer);
+  }, WORD_TYPE_INTERVAL);
+}
+
+// A trailing digit marks separate models of the same food (e.g. "cookie2"
+// alongside "cookie") — strip it so they share one word-list entry instead
+// of each needing their own.
+function wordListMatchId(id) {
+  return id.replace(/\d+$/, '');
+}
+
+// Advances the list to its next language and retypes every word,
+// highlighting whichever entry matches the currently-focused wall object.
+function renderWordList() {
+  if (currentObjectIndex < 0) return;
+  wordListLanguageIndex = (wordListLanguageIndex + 1) % WORD_LIST_LANGUAGES.length;
+  const language = WORD_LIST_LANGUAGES[wordListLanguageIndex];
+  const activeId = wordListMatchId(wallObjects[currentObjectIndex].id);
+  for (const entry of wordListEntries) {
+    entry.el.classList.toggle('active', entry.id === activeId);
+    typewriteWord(entry, entry.words[language]);
+  }
+}
+
 // Points the camera at wallObjects[index]'s close-up framing. Cuts instantly
 // for the very first object; every later call eases the camera across the
 // wall from wherever it currently is, staying at close-up zoom the whole way.
@@ -440,15 +606,17 @@ function focusObject(index, { instant = false } = {}) {
   currentDamping = SPRING_DAMPING_RISE;
 
   applyZoomLimits();
+  renderWordList();
 }
 
 // Places one instance of every loaded model on the wall (same z, spread
 // across x/y in a grid, spaced by WALL_SPACING) and pre-computes each one's
-// close-up framing.
-function buildWall(objects) {
-  const cols = Math.ceil(Math.sqrt(objects.length));
-  const rows = Math.ceil(objects.length / cols);
-  return objects.map((object, i) => {
+// close-up framing. Keeps each model's manifest id around too, so the word
+// list (below) can tell which wall object is currently focused.
+function buildWall(entries) {
+  const cols = Math.ceil(Math.sqrt(entries.length));
+  const rows = Math.ceil(entries.length / cols);
+  return entries.map(({ id, object }, i) => {
     const col = i % cols;
     const row = Math.floor(i / cols);
     const wallPos = new THREE.Vector3(
@@ -458,7 +626,7 @@ function buildWall(objects) {
     );
     const group = prepareObject(object, wallPos);
     scene.add(group);
-    return { group, ...computeCloseView(group) };
+    return { id, group, ...computeCloseView(group) };
   });
 }
 
@@ -584,8 +752,16 @@ window.addEventListener('keydown', (e) => {
   if (e.key === '0') setDebugMode(!debugMode);
 });
 
-btnBack.addEventListener('click', () => focusObject(pickNextObjectIndex()));
-btnForward.addEventListener('click', () => focusObject(pickNextObjectIndex()));
+btnRandomObject.addEventListener('click', () => {
+  focusObject(pickNextObjectIndex());
+  // Restart the click-spin animation even on a rapid re-click: removing the
+  // class doesn't take effect until the next reflow, so force one before
+  // re-adding it — otherwise the browser just no-ops the "same" class add.
+  btnRandomObject.classList.remove('spin');
+  void btnRandomObject.offsetWidth;
+  btnRandomObject.classList.add('spin');
+});
+btnRandomObject.addEventListener('animationend', () => btnRandomObject.classList.remove('spin'));
 
 function loadModel(model) {
   return new Promise((resolve, reject) => {
@@ -620,16 +796,18 @@ async function init() {
   statusEl.textContent = '불러오는 중...';
   statusEl.style.display = 'block';
 
-  const objects = await Promise.all(
+  const entries = await Promise.all(
     models.map((model) =>
-      loadModel(model).catch((err) => {
-        console.error(err);
-        return null;
-      })
+      loadModel(model)
+        .then((object) => ({ id: model.id, object }))
+        .catch((err) => {
+          console.error(err);
+          return null;
+        })
     )
   );
 
-  const loaded = objects.filter(Boolean);
+  const loaded = entries.filter(Boolean);
   if (!loaded.length) {
     statusEl.textContent = '모델을 불러오지 못했습니다.';
     return;
@@ -646,6 +824,7 @@ window.addEventListener('resize', () => {
   camera.aspect = app.clientWidth / app.clientHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(app.clientWidth, app.clientHeight);
+  syncHudViewBox();
   // Unlike OrbitControls, TrackballControls caches the canvas's screen-space
   // bounds (for mapping pointer position to rotation) and needs this called
   // explicitly whenever those bounds change.
@@ -709,6 +888,16 @@ renderer.setAnimationLoop(() => {
   camera.rotateX(wiggleTilt);
 
   renderer.render(scene, camera);
+
+  // Read the live, wiggle-included position — still nudged at this point,
+  // before the undo below — but only every COORD_UPDATE_INTERVAL seconds:
+  // at full render fps the ambient sway makes the digits flicker too fast
+  // to read, so this settles it to a steady ~12 updates/sec instead.
+  if (elapsedTime - lastCoordUpdateTime >= COORD_UPDATE_INTERVAL) {
+    lastCoordUpdateTime = elapsedTime;
+    cameraXEl.textContent = camera.position.x.toFixed(5);
+    cameraYEl.textContent = camera.position.y.toFixed(5);
+  }
 
   camera.rotateX(-wiggleTilt);
   camera.rotateY(-wiggleYaw);

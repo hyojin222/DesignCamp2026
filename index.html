@@ -4,13 +4,27 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Food Observing</title>
+    <!-- One family per script the word list (below) actually needs glyphs
+         for — Google Fonts doesn't ship one "Noto Sans" covering all of
+         these, so the font-family stacks list every one of them and the
+         browser picks whichever actually has the glyph for each character.
+         Noto Sans itself already covers Latin/Cyrillic/Greek, so there's no
+         separate "Noto Sans Greek" request. -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500&family=Noto+Sans+Arabic:wght@400;500&family=Noto+Sans+Georgian:wght@400;500&family=Noto+Sans+Hebrew:wght@400;500&family=Noto+Sans+JP:wght@400;500&family=Noto+Sans+KR:wght@400;500&family=Noto+Sans+SC:wght@400;500&family=Noto+Sans+Sinhala:wght@400;500&family=Noto+Sans+Thai:wght@400;500&display=swap"
+    />
     <style>
+      :root {
+        --font-noto: "Noto Sans KR", "Noto Sans", "Noto Sans JP", "Noto Sans SC", "Noto Sans Thai", "Noto Sans Arabic",
+          "Noto Sans Hebrew", "Noto Sans Georgian", "Noto Sans Sinhala", system-ui, sans-serif;
+      }
       html, body {
         margin: 0;
         height: 100%;
         overflow: hidden;
         background: #000000;
-        font-family: system-ui, -apple-system, "Malgun Gothic", sans-serif;
+        font-family: var(--font-noto);
       }
       #app {
         position: relative;
@@ -43,47 +57,93 @@
         width: 100%;
         height: 100%;
       }
-      #ui-controls {
+      #word-list {
         position: fixed;
-        inset: 0;
+        left: 32px;
+        bottom: 30px;
         z-index: 200;
+        display: grid;
+        /* Fixed, not auto — auto sizes each column to its widest current
+           content, so as the typewriter effect grows one row's word, every
+           other row sharing that column would shift too. A fixed width reserves
+           each word's space up front regardless of how long it ends up being.
+           4 columns x row-major auto-placement = 3 rows for the 10 words
+           (4 + 4 + 2), same as grid-auto-flow's default. */
+        grid-template-columns: repeat(8, 160px);
+        gap: 4px 6px;
         pointer-events: none;
       }
-      .ui-btn {
-        position: absolute;
+      .word-item {
+        color: #fff81f;
+        font-family: var(--font-noto);
+        font-size: 16px;
+        font-weight: 400;
+        line-height: 1.4;
+        opacity: 0.2;
+        white-space: nowrap;
+        overflow: hidden;
+        transition: opacity 0.3s ease;
+      }
+      .word-item.active {
+        font-weight: 500;
+        opacity: 1;
+      }
+      #camera-readout {
+        position: fixed;
+        right: 32px;
+        bottom: 30px;
+        z-index: 200;
         display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 56px;
-        height: 56px;
+        flex-direction: column;
+        align-items: flex-end;
+      }
+      #camera-coords {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      #btn-random-object {
         padding: 0;
         border: none;
         background: none;
-        color: #1f1f1f;
         cursor: pointer;
         pointer-events: auto;
-        transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+        opacity: 1;
+        transition: transform 0.25s ease;
       }
-      .ui-btn svg {
-        width: 50px;
-        height: 50px;
-        fill: currentColor;
+      #btn-random-object:hover {
+        transform: rotate(-14deg);
       }
-      .ui-btn--back {
-        top: 50%;
-        left: 20px;
-        transform: translateY(-50%);
+      /* One-shot clockwise spin on click, toggled via .spin in main.js
+         (removed again on 'animationend' so it can replay every click). An
+         active animation overrides the :hover transform above for its
+         duration — starting from that same -14deg tilt (instead of snapping
+         to 0 first) so a hover-then-click reads as one continuous motion,
+         and ending a full turn past it so it lands back at the tilt too. */
+      #btn-random-object.spin {
+        animation: btn-random-object-spin 0.7s ease-out;
       }
-      .ui-btn--back:hover {
-        transform: translateY(-50%) translateX(-8px);
+      @keyframes btn-random-object-spin {
+        from {
+          transform: rotate(-14deg);
+        }
+        to {
+          transform: rotate(346deg);
+        }
       }
-      .ui-btn--forward {
-        top: 50%;
-        right: 20px;
-        transform: translateY(-50%);
+      #btn-random-object svg {
+        display: block;
+        width: 88px;
+        height: 88px;
+        fill: #fff81f;
       }
-      .ui-btn--forward:hover {
-        transform: translateY(-50%) translateX(8px);
+      .coord-line {
+        color: #fff81f;
+        font-variant-numeric: tabular-nums;
+        font-size: 24px;
+        text-align: right;
       }
     </style>
   </head>
@@ -92,17 +152,23 @@
       <div id="status">불러오는 중...</div>
 
       <!-- Goggle-shaped porthole frame. Its fill (id="hud1-frame") is driven
-           from main.js, in sync with the scene background color. -->
+           from main.js, in sync with the scene background color. The
+           viewBox width (id="hud1-svg") and this mask's/frame's rect widths
+           are also kept in sync with the window's actual aspect ratio from
+           main.js (syncHudViewBox()) — with a fixed 1920x1080 viewBox,
+           "slice" crops whichever dimension overflows the real window
+           aspect ratio, which cropped the now-edge-to-edge goggle shape's
+           left/right sides on any window that wasn't exactly 16:9. -->
       <div id="hud-1">
-        <svg viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+        <svg id="hud1-svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
           <defs>
             <mask id="hud1-porthole-mask">
-              <rect width="1920" height="1080" fill="white" />
+              <rect id="hud1-mask-bg" width="1920" height="1080" fill="white" />
               <!-- Fallback shape for before main.js fetches the live
                    source/layout/goggle.svg (see loadGoggleMask() there) and
-                   replaces this element outright, so an edit to that file
-                   shows up on the next reload without touching this markup. -->
-              <svg id="hud1-goggle-shape" x="120" y="80" width="1680" height="920" viewBox="0 0 1837.74 998.11" preserveAspectRatio="xMidYMid meet">
+                   replaces this element outright, so editing that file and
+                   reloading is all it takes to change the goggle cutout. -->
+              <svg id="hud1-goggle-shape" x="134.4" y="70" width="1651.2" height="896.8" viewBox="0 0 1837.74 998.11" preserveAspectRatio="xMidYMid meet">
                 <path
                   fill="black"
                   d="M1807.29,0H30.45C13.63,0,0,13.63,0,30.45v861.76c0,58.49,47.41,105.9,105.9,105.9h529.87c42.39,0,81.55-22.67,102.66-59.43,30.86-53.74,71.61-124.47,71.61-124.47,48.37-83.78,169.29-83.78,217.66,0,0,0,40.74,70.73,71.61,124.47,21.11,36.76,60.27,59.43,102.66,59.43h529.87c58.49,0,105.9-47.41,105.9-105.9V30.45c0-16.82-13.63-30.45-30.45-30.45Z"
@@ -111,19 +177,30 @@
             </mask>
           </defs>
 
-          <rect id="hud1-frame" width="1920" height="1080" fill="#ffffff" mask="url(#hud1-porthole-mask)" />
+          <rect id="hud1-frame" width="1920" height="1080" fill="#292929" mask="url(#hud1-porthole-mask)" />
         </svg>
       </div>
 
-      <!-- Wall-gallery controls: back/forward jump the camera to a
-           different random object on the wall. -->
-      <div id="ui-controls">
-        <button id="btn-back" class="ui-btn ui-btn--back" type="button" aria-label="이전 오브제">
-          <svg viewBox="0 -960 960 960"><path d="M640-80 240-480l400-400 71 71-329 329 329 329-71 71Z"/></svg>
+      <!-- 4x3 word list, populated and typewriter-animated from main.js
+           (renderWordList()) — highlights whichever word matches the
+           currently-focused wall object, in a language re-picked each time. -->
+      <div id="word-list"></div>
+
+      <!-- Bottom-right: the random-object button (jumps to a different
+           random object, excluding the last 3 seen) above a live camera x/y
+           readout, both driven from main.js. This inline svg is only the
+           fallback shown before loadButtonIcon() fetches the live
+           source/icon/re.svg (copied to public/icon/ by
+           scripts/generate-assets.mjs) and replaces it outright — editing
+           that source file and reloading is all it takes to change the icon. -->
+      <div id="camera-readout">
+        <button id="btn-random-object" type="button" aria-label="랜덤 오브제">
+          <svg viewBox="0 -960 960 960"><path d="M482-160q-134 0-228-93t-94-227v-7l-64 64-56-56 160-160 160 160-56 56-64-64v7q0 100 70.5 170T482-240q26 0 51-6t49-18l60 60q-38 22-78 33t-82 11Zm278-161L600-481l56-56 64 64v-7q0-100-70.5-170T478-720q-26 0-51 6t-49 18l-60-60q38-22 78-33t82-11q134 0 228 93t94 227v7l64-64 56 56-160 160Z"/></svg>
         </button>
-        <button id="btn-forward" class="ui-btn ui-btn--forward" type="button" aria-label="다음 오브제">
-          <svg viewBox="0 -960 960 960"><path d="m321-80-71-71 329-329-329-329 71-71 400 400L321-80Z"/></svg>
-        </button>
+        <div id="camera-coords">
+          <div id="camera-x" class="coord-line"></div>
+          <div id="camera-y" class="coord-line"></div>
+        </div>
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>

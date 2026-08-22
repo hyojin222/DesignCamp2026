@@ -9,9 +9,20 @@ export const SOURCE_DIR = path.join(ROOT, 'source');
 const OUTPUT_DIR = path.join(ROOT, 'public', 'models');
 const LAYOUT_SOURCE_DIR = path.join(SOURCE_DIR, 'layout');
 const LAYOUT_OUTPUT_DIR = path.join(ROOT, 'public', 'layout');
+const ICON_SOURCE_DIR = path.join(SOURCE_DIR, 'icon');
+const ICON_OUTPUT_DIR = path.join(ROOT, 'public', 'icon');
+const SOUND_SOURCE_DIR = path.join(SOURCE_DIR, 'sound');
+const SOUND_OUTPUT_DIR = path.join(ROOT, 'public', 'sound');
 
 const MESH_EXTS = new Set(['.obj', '.glb', '.gltf']);
 const IMAGE_EXTS = new Set(['.tif', '.tiff', '.png', '.jpg', '.jpeg']);
+// Some sources (raw AI-mesh-generator exports in particular) ship totally
+// undecimated meshes — multiple hundred MB for one object, millions of
+// vertices — that will choke the browser (parsing + GPU upload + per-frame
+// rendering of everything simultaneously on the wall) long before anything
+// else in the pipeline notices. Skip rather than ship those; re-export at a
+// sane poly count and it'll get picked back up automatically.
+const MAX_MESH_BYTES = 25 * 1024 * 1024; // 25MB — raised from 20MB to admit toast's decimated "_reduced" export (~21MB)
 
 const ROLE_ALIASES = {
   map: ['albedo', 'basecolor', 'diffuse', 'color'],
@@ -54,7 +65,10 @@ async function walk(dir) {
 }
 
 // "food_strawberry_001_LOD1" -> { key: 'food_strawberry_001', name: 'strawberry', lod: 1 }
-function parseMeshName(base) {
+// Meshes that don't follow that convention (e.g. raw "Meshy_AI_..._texture"
+// exports) fall back to the mesh's own folder name instead of its own ugly
+// filename, since the folder is already how these get organized/named.
+function parseMeshName(base, folderName) {
   const m = base.match(/^([a-z0-9]+)_(.+)_(\d{3})_lod(\d+)$/i);
   if (m) {
     return {
@@ -63,7 +77,7 @@ function parseMeshName(base) {
       lod: parseInt(m[4], 10),
     };
   }
-  return { key: base.toLowerCase(), name: base, lod: 1 };
+  return { key: folderName.toLowerCase(), name: folderName, lod: 1 };
 }
 
 // "food_strawberry_001_LOD1_albedo" -> { key: 'food_strawberry_001', lod: 1, role: 'map' }
@@ -102,29 +116,30 @@ async function convertTexture(srcPath, destPathNoExt, role) {
   return dest;
 }
 
-// Mirrors every *.svg straight from source/layout into public/layout, so
-// editing a layout SVG (e.g. the goggle porthole shape) and reloading is all
-// it takes for the app — which fetches these at runtime — to pick it up.
-async function copyLayoutSvgs() {
-  await fs.rm(LAYOUT_OUTPUT_DIR, { recursive: true, force: true });
+// Mirrors every file matching extensions straight from srcDir into destDir,
+// so editing a source asset (the goggle porthole shape, a button icon, the
+// background music, ...) and reloading is all it takes for the app — which
+// fetches these at runtime — to pick it up.
+async function copyFilesDir(srcDir, destDir, extensions) {
+  await fs.rm(destDir, { recursive: true, force: true });
   let entries = [];
   try {
-    entries = await fs.readdir(LAYOUT_SOURCE_DIR, { withFileTypes: true });
+    entries = await fs.readdir(srcDir, { withFileTypes: true });
   } catch {
     return;
   }
-  const svgFiles = entries.filter((e) => e.isFile() && path.extname(e.name).toLowerCase() === '.svg');
-  if (!svgFiles.length) return;
-  await fs.mkdir(LAYOUT_OUTPUT_DIR, { recursive: true });
-  await Promise.all(
-    svgFiles.map((e) => fs.copyFile(path.join(LAYOUT_SOURCE_DIR, e.name), path.join(LAYOUT_OUTPUT_DIR, e.name)))
-  );
+  const matches = entries.filter((e) => e.isFile() && extensions.has(path.extname(e.name).toLowerCase()));
+  if (!matches.length) return;
+  await fs.mkdir(destDir, { recursive: true });
+  await Promise.all(matches.map((e) => fs.copyFile(path.join(srcDir, e.name), path.join(destDir, e.name))));
 }
 
 export async function generateAssets() {
   await fs.rm(OUTPUT_DIR, { recursive: true, force: true });
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
-  await copyLayoutSvgs();
+  await copyFilesDir(LAYOUT_SOURCE_DIR, LAYOUT_OUTPUT_DIR, new Set(['.svg']));
+  await copyFilesDir(ICON_SOURCE_DIR, ICON_OUTPUT_DIR, new Set(['.svg']));
+  await copyFilesDir(SOUND_SOURCE_DIR, SOUND_OUTPUT_DIR, new Set(['.mp3', '.ogg', '.wav', '.m4a']));
 
   let allFiles = [];
   try {
@@ -146,7 +161,12 @@ export async function generateAssets() {
     if (ext === '.glb' || ext === '.gltf') {
       glbFiles.push(file);
     } else if (ext === '.obj') {
-      const { key, name, lod } = parseMeshName(base);
+      const { size } = await fs.stat(file);
+      if (size > MAX_MESH_BYTES) {
+        console.warn(`Skipping oversized mesh (${(size / 1024 / 1024).toFixed(0)}MB > ${MAX_MESH_BYTES / 1024 / 1024}MB): ${file}`);
+        continue;
+      }
+      const { key, name, lod } = parseMeshName(base, path.basename(dir));
       const groupKey = `${dir}::${key}`;
       if (!objGroups.has(groupKey)) objGroups.set(groupKey, { dir, name, meshes: [] });
       objGroups.get(groupKey).meshes.push({ lod, path: file });
