@@ -285,20 +285,73 @@ function prepareFilterMaterials(group) {
   });
 }
 
+// A genuine flat-color THREE texture (not just a material.color tweak) —
+// a tiny canvas filled solid, used both for 'solid' mode and as the
+// immediate fallback in 'filter' mode before the real bake is ready.
+function createSolidColorTexture(hexColor) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 4;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = `#${new THREE.Color(hexColor).getHexString()}`;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+// Draws the object's real texture onto a canvas, then paints a semi-opaque
+// yellow rectangle over it (alpha = strength) and hands back the flattened
+// result as a new texture — an actual "yellow texture layered on the
+// existing texture", not a shader-level tint. Waits for the source image if
+// it hasn't finished loading yet.
+function bakeYellowOverlayTexture(baseTexture, hexColor, strength, onReady) {
+  const img = baseTexture.image;
+  if (!img) return;
+  const bake = () => {
+    const w = img.naturalWidth || img.width || 512;
+    const h = img.naturalHeight || img.height || 512;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, w, h);
+    ctx.globalAlpha = strength;
+    ctx.fillStyle = `#${new THREE.Color(hexColor).getHexString()}`;
+    ctx.fillRect(0, 0, w, h);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = baseTexture.colorSpace;
+    texture.wrapS = baseTexture.wrapS;
+    texture.wrapT = baseTexture.wrapT;
+    texture.repeat.copy(baseTexture.repeat);
+    onReady(texture);
+  };
+  if (img.complete || img.videoWidth) bake();
+  else img.addEventListener('load', bake, { once: true });
+}
+
 function buildYellowMaterial(normal) {
+  const yellow = normal.clone();
+  yellow.color.set(0xffffff); // the texture itself carries the color now
+
   if (YELLOW_MODE === 'solid') {
-    // Flat color, no texture at all.
-    return new THREE.MeshStandardMaterial({
-      color: YELLOW_SOLID_COLOR,
-      roughness: normal.roughness,
-      metalness: normal.metalness,
+    // Texture removed entirely — a flat generated color texture instead.
+    yellow.map = createSolidColorTexture(YELLOW_SOLID_COLOR);
+    return yellow;
+  }
+
+  // Filter mode: start with a plain tinted texture immediately (so there's
+  // always a real texture in place, even before the source image is ready),
+  // then swap in the true "yellow layered over the existing texture" bake
+  // once the original image has actually finished loading.
+  const fallbackColor = normal.color.clone().lerp(new THREE.Color(YELLOW_FILTER_COLOR), YELLOW_FILTER_STRENGTH);
+  yellow.map = createSolidColorTexture(fallbackColor.getHex());
+  if (normal.map) {
+    bakeYellowOverlayTexture(normal.map, YELLOW_FILTER_COLOR, YELLOW_FILTER_STRENGTH, (baked) => {
+      yellow.map = baked;
+      yellow.needsUpdate = true;
     });
   }
-  // Tint mode: keeps the texture, blends its base color toward the filter
-  // color by YELLOW_FILTER_STRENGTH (0 = untouched, 1 = fully replaced).
-  const tinted = normal.clone();
-  tinted.color = normal.color.clone().lerp(new THREE.Color(YELLOW_FILTER_COLOR), YELLOW_FILTER_STRENGTH);
-  return tinted;
+  return yellow;
 }
 
 function setYellowFilter(group, enabled) {
@@ -334,7 +387,17 @@ function computeFocusView(object) {
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
 
   const fitDistance = maxDim / (2 * Math.tan((Math.PI * camera.fov) / 360));
-  const zoomDistance = fitDistance * randomRange(0.28, 0.4);
+
+  // The object's real bounding-sphere radius (half the box's diagonal, so it
+  // fully contains every corner — half of maxDim alone would still let the
+  // camera clip through corners on non-cubic shapes) plus a random margin
+  // "n", so the camera is mathematically guaranteed to sit outside the
+  // geometry instead of just being placed at some fraction of fitDistance
+  // that could land inside it.
+  const boundingRadius = size.length() / 2;
+  const margin = boundingRadius * randomRange(0.15, 0.5);
+  const zoomDistance = boundingRadius + margin;
+
   const theta = randomRange(0, Math.PI * 2);
   const phi = randomRange(Math.PI * 0.3, Math.PI * 0.7);
 
@@ -344,7 +407,7 @@ function computeFocusView(object) {
     center.z + zoomDistance * Math.sin(phi) * Math.sin(theta)
   );
 
-  return { position, target: center, zoomDistance, fitDistance };
+  return { position, target: center, zoomDistance, fitDistance, boundingRadius };
 }
 
 // Apply a focus view's distances/limits/spring state once the camera is actually there.
@@ -353,8 +416,10 @@ function applyFocusState(view) {
   camera.far = view.fitDistance * 100;
   camera.updateProjectionMatrix();
 
-  // How far in/out the user can zoom from the focused framing.
-  controls.minDistance = view.zoomDistance * 0.65;
+  // How far in/out the user can zoom from the focused framing. Never let the
+  // near limit creep inside the object's own bounding radius, even if 0.65x
+  // the framing distance would otherwise put it there.
+  controls.minDistance = Math.max(view.zoomDistance * 0.65, view.boundingRadius * 1.05);
   controls.maxDistance = view.zoomDistance * 1.5;
 
   // Leave bobOffset/bobVelocity as they are (don't snap to 0) — bobTarget=0
