@@ -80,12 +80,12 @@ const BTN_SPIN_DURATION = 0.7; // seconds for the release-triggered spin back up
 
 const app = document.getElementById('app');
 const statusEl = document.getElementById('status');
-const loadingScreenEl = document.getElementById('loading-screen');
 const btnRandomObject = document.getElementById('btn-random-object');
 const hud1Svg = document.getElementById('hud1-svg');
 const hud1MaskBg = document.getElementById('hud1-mask-bg');
 const hud1Frame = document.getElementById('hud1-frame');
 const wordTypewriterEl = document.getElementById('word-typewriter-text');
+const debugObjectListEl = document.getElementById('debug-object-list');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(BG_YELLOW_COLOR);
@@ -154,41 +154,53 @@ bgm.play().catch(() => {
   window.addEventListener('keydown', resume, { once: true });
 });
 
-// Fixed height of the HUD's coordinate space; the width instead tracks the
-// window's actual aspect ratio (see syncHudViewBox()) so the viewBox's own
-// aspect ratio always matches the window's — otherwise preserveAspectRatio's
-// "slice" has overflow to crop on whichever axis the two ratios disagree on,
-// which is what was cutting the now-edge-to-edge goggle shape's left/right
-// sides on any window that wasn't exactly 16:9.
+// Fixed height of the HUD's coordinate space; the width instead tracks
+// #hud1-svg's own rendered aspect ratio (see syncHudViewBox()) so the
+// viewBox's own aspect ratio always matches the *element's*, not the
+// window's — otherwise preserveAspectRatio's "slice" has overflow to crop
+// on whichever axis the two ratios disagree on, which is what was cutting
+// the now-edge-to-edge goggle shape's left/right sides on any window that
+// wasn't exactly 16:9.
 const HUD_HEIGHT = 1080;
-let hudViewBoxWidth = HUD_HEIGHT * (app.clientWidth / app.clientHeight);
+let hudViewBoxWidth = HUD_HEIGHT * (hud1Svg.clientWidth / hud1Svg.clientHeight);
 // The fetched goggle SVG's own height/width ratio, so its box can be
 // recomputed on resize without re-fetching. Starts out matching the static
 // fallback shape's ratio (1038.2/1975.98) until the real one loads.
 let goggleAspectRatio = 1038.2 / 1975.98;
+// Solid margin kept clear on either side of the goggle *cutout* itself —
+// #hud1-frame (the solid color around it) still runs edge-to-edge; only the
+// hole (and its unmasked hit-testing twin) is narrower than that. In real
+// screen pixels, converted to HUD units in applyGoggleMaskBox() below since
+// this coordinate space's width isn't fixed (see HUD_HEIGHT above).
+const GOGGLE_HORIZONTAL_MARGIN_PX = 18;
 
-// Sizes the goggle shape to span the full (dynamic) HUD width, vertically
+// Sizes the goggle shape to fit within its horizontal margin, vertically
 // centered on the viewport height — called both right after it loads and on
 // every resize. Applied to both #hud1-goggle-shape (the mask hole) and
 // #hud1-goggle-hit (its unmasked hit-testing twin, see the CSS comment in
 // index.html) so the interactive area always exactly matches the visible
 // cutout.
 function applyGoggleMaskBox() {
-  const height = hudViewBoxWidth * goggleAspectRatio;
+  // HUD_HEIGHT units always span hud1Svg's actual rendered height 1:1, so
+  // this is the one scale factor that converts a real pixel margin into HUD
+  // units regardless of the current window size.
+  const marginUnits = GOGGLE_HORIZONTAL_MARGIN_PX * (HUD_HEIGHT / hud1Svg.clientHeight);
+  const width = hudViewBoxWidth - marginUnits * 2;
+  const height = width * goggleAspectRatio;
   for (const id of ['hud1-goggle-shape', 'hud1-goggle-hit']) {
     const shape = document.getElementById(id);
     if (!shape) continue;
-    shape.setAttribute('x', 0);
+    shape.setAttribute('x', marginUnits);
     shape.setAttribute('y', (HUD_HEIGHT - height) / 2);
-    shape.setAttribute('width', hudViewBoxWidth);
+    shape.setAttribute('width', width);
     shape.setAttribute('height', height);
   }
 }
 
-// Keeps the HUD's viewBox width (and everything sized off it) matched to the
-// window's actual aspect ratio — see the HUD_HEIGHT comment above.
+// Keeps the HUD's viewBox width (and everything sized off it) matched to
+// #hud1-svg's actual rendered aspect ratio — see the HUD_HEIGHT comment above.
 function syncHudViewBox() {
-  hudViewBoxWidth = HUD_HEIGHT * (app.clientWidth / app.clientHeight);
+  hudViewBoxWidth = HUD_HEIGHT * (hud1Svg.clientWidth / hud1Svg.clientHeight);
   hud1Svg.setAttribute('viewBox', `0 0 ${hudViewBoxWidth} ${HUD_HEIGHT}`);
   hud1MaskBg.setAttribute('width', hudViewBoxWidth);
   hud1Frame.setAttribute('width', hudViewBoxWidth);
@@ -242,7 +254,7 @@ async function loadGoggleMask() {
     console.error('goggle mask load failed, keeping fallback shape', err);
   }
 }
-const goggleMaskReady = loadGoggleMask();
+loadGoggleMask();
 
 // Fetches an icon SVG (copied verbatim to public/icon/ by
 // scripts/generate-assets.mjs) and swaps it in for whatever fallback markup
@@ -273,7 +285,7 @@ async function loadButtonIcon(button, url) {
     console.error(`icon load failed for ${url}, keeping fallback icon`, err);
   }
 }
-const buttonIconReady = loadButtonIcon(btnRandomObject, `${BASE}icon/re.svg`);
+loadButtonIcon(btnRandomObject, `${BASE}icon/re.svg`);
 
 // id -> { en, ru, zh, ja, fr, th, hi, ar, he } translations (source/data/words.json,
 // copied verbatim to public/data/ by scripts/generate-assets.mjs), cycled
@@ -719,6 +731,23 @@ function buildWall(entries) {
   });
 }
 
+// Debug-mode object picker: one row per wallObjects entry, showing its id —
+// click jumps the camera there via the same focusObject() the auto-advance
+// and random-object button use. Built once, right after wallObjects exists,
+// since the list itself never changes after that (only its .visible
+// toggling in setDebugMode does).
+function renderDebugObjectList() {
+  debugObjectListEl.replaceChildren(
+    ...wallObjects.map(({ id }, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = id;
+      button.addEventListener('click', () => focusObject(index));
+      return button;
+    })
+  );
+}
+
 // Don't let the manual pan tween and user-driven dragging fight each other —
 // finish the tween instantly and hand off to whichever drag is starting.
 function finishPanTweenNow() {
@@ -840,6 +869,7 @@ function setDebugMode(on) {
   // canvas free to roam the camera, so this rule (index.html) turns that
   // shape's pointer-events back off for as long as debug mode is on.
   hud1Svg.classList.toggle('goggle-hit-disabled', debugMode);
+  debugObjectListEl.classList.toggle('visible', debugMode);
   if (debugMode) {
     // Same generic bounds the controls start with before any object is shown.
     controls.minDistance = 0.05;
@@ -939,18 +969,12 @@ async function init() {
   }
 
   wallObjects = buildWall(loaded);
+  renderDebugObjectList();
   focusObject(Math.floor(Math.random() * wallObjects.length), { instant: true });
   statusEl.style.display = 'none';
 }
 
-const modelsReady = init();
-
-// Keeps the solid-color loading screen up until every async load that could
-// otherwise flash a not-yet-ready state — models, the goggle mask, the
-// button icon — has settled (success or failure alike), then fades it out.
-Promise.all([modelsReady, goggleMaskReady, buttonIconReady]).finally(() => {
-  loadingScreenEl.classList.add('loading-screen-hidden');
-});
+init();
 
 window.addEventListener('resize', () => {
   camera.aspect = app.clientWidth / app.clientHeight;

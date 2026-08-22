@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Food Observing</title>
+    <title>낯선 식탁</title>
     <!-- One family per script the word list (below) actually needs glyphs
          for — Google Fonts doesn't ship one "Noto Sans" covering all of
          these, so the font-family stacks list every one of them and the
@@ -35,7 +35,7 @@
         margin: 0;
         height: 100%;
         overflow: hidden;
-        background: #000000;
+        background: #fff075;
         font-family: var(--font-noto);
         /* No text/selection anywhere — this is a kiosk-style gallery, not a
            document, and a stray drag-select easily fires instead of (or
@@ -66,39 +66,6 @@
         z-index: 10;
         color: rgba(255, 255, 255, 0.6);
         font-size: 13px;
-      }
-      /* Solid-color loading screen: sits above everything (hud/buttons
-         included) from first paint, so nothing underneath — the goggle mask
-         fallback shape, the button's fallback icon — is ever actually
-         visible while it's still settling into its final state. Hidden once
-         every async load (models + goggle mask + button icon, see the
-         Promise.all in main.js) has settled. Color matches BG_YELLOW_COLOR
-         in main.js — keep the two in sync if that constant ever changes.
-         #loading-title is a child of this element (not a sibling with its
-         own opacity/transition) specifically so the two fade out as one
-         single object — a lone `opacity` transition on the parent fades its
-         whole subtree together, rather than title and background each
-         fading independently and potentially drifting out of sync. */
-      #loading-screen {
-        position: fixed;
-        inset: 0;
-        z-index: 500;
-        background: #fff075;
-        transition: opacity 0.3s ease;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-      #loading-screen.loading-screen-hidden {
-        opacity: 0;
-        pointer-events: none;
-      }
-      #loading-title {
-        color: #292929;
-        font-family: var(--font-word-pop);
-        font-size: 128px;
-        font-weight: 800;
-        letter-spacing: -0.05em;
       }
       #hud-1 {
         position: fixed;
@@ -162,6 +129,38 @@
           opacity: 0;
         }
       }
+      /* Debug-mode-only object picker (main.js's renderDebugObjectList) —
+         one row per wall object's id, click to jump the camera there via
+         the same focusObject() the auto-advance/random-object button use.
+         Hidden outside debug mode (setDebugMode toggles .visible); starts
+         below #word-typewriter (which keeps running in debug mode too) so
+         the two top-left overlays don't sit on top of each other. */
+      #debug-object-list {
+        display: none;
+        position: fixed;
+        top: 60px;
+        left: 18px;
+        z-index: 300;
+        flex-direction: column;
+        max-height: calc(100vh - 80px);
+        overflow-y: auto;
+        font-family: var(--font-noto);
+        font-size: 13px;
+      }
+      #debug-object-list.visible {
+        display: flex;
+      }
+      #debug-object-list button {
+        all: unset;
+        cursor: pointer;
+        padding: 2px 8px;
+        color: rgba(255, 255, 255, 0.75);
+        white-space: nowrap;
+      }
+      #debug-object-list button:hover {
+        color: #fff075;
+        background: rgba(255, 255, 255, 0.12);
+      }
       /* Real (unmasked) copy of the goggle shape, painted transparent and
          sitting on top of #hud1-frame in the same SVG — its only job is
          hit-testing. #hud-1 is pointer-events: none so clicks fall through
@@ -193,7 +192,7 @@
       #btn-random-object {
         position: fixed;
         left: 50%;
-        bottom: 50px;
+        bottom: 30px;
         z-index: 200;
         padding: 0;
         border: none;
@@ -227,8 +226,8 @@
       }
       #btn-random-object svg {
         display: block;
-        width: 164px;
-        height: 164px;
+        width: 3dvw;
+        height: 3dvw;
         fill: #fff64a;
       }
     </style>
@@ -236,8 +235,8 @@
   <body>
     <div id="app">
       <div id="status">불러오는 중...</div>
-      <div id="loading-screen"><div id="loading-title">낯선 식탁</div></div>
       <div id="word-typewriter"><span id="word-typewriter-text"></span><span id="word-typewriter-cursor"></span></div>
+      <div id="debug-object-list"></div>
 
       <!-- Goggle-shaped porthole frame. Its fill (id="hud1-frame") is driven
            from main.js, in sync with the scene background color. The
@@ -256,10 +255,9 @@
                    source/layout/goggle.svg (see loadGoggleMask() there) and
                    replaces this element outright — kept as a baked copy of
                    that file's current path so the two never visibly
-                   disagree. This is only ever visible for an instant behind
-                   #loading-screen anyway (see above), but stays synced as a
-                   belt-and-suspenders match: re-copy the path here whenever
-                   that source file's shape changes. -->
+                   disagree, since (with no loading screen) this can be
+                   visible for a moment on a slow load. Re-copy the path
+                   here whenever that source file's shape changes. -->
               <svg id="hud1-goggle-shape" viewBox="0 0 1975.98 1038.2" preserveAspectRatio="xMidYMid meet">
                 <path fill="black" d="M1811.84,167.41C1651.52,16.7,1396.05,0,987.99,0S324.47,16.7,164.15,167.41C28.29,295.13,0,419.56,0,554.87c0,145.68,77.51,446.18,387.46,477.1,271.45,27.08,373.56-36.1,431.81-150.06,30.76-60.18,70.43-157.62,99.16-236.13,28.23-77.15,57.15-80.61,69.56-80.61s41.33,3.45,69.56,80.61c28.73,78.51,68.4,175.96,99.16,236.13,58.25,113.96,160.36,177.14,431.8,150.06,309.95-30.92,387.46-331.42,387.46-477.1,0-135.31-28.29-259.74-164.15-387.46Z" />
               </svg>
@@ -284,10 +282,14 @@
            source/icon/re.svg (copied to public/icon/ by
            scripts/generate-assets.mjs) and replaces it outright — kept as a
            baked copy of that file's current path so the two never visibly
-           disagree (only ever visible for an instant behind #loading-screen
-           anyway). Re-copy the path here whenever that source file changes. -->
+           disagree, since (with no loading screen) this can be visible for
+           a moment on a slow load. Re-copy the path here whenever that
+           source file changes. -->
       <button id="btn-random-object" type="button" aria-label="랜덤 오브제">
-        <svg viewBox="0 -960 960 960"><path d="M196-194v-22h134l-50-49q-48-47-71-99.5T186-476q0-90 50-165t134-111v23q-74 34-118 102.5T208-476q0 56 21 104t62 87l56 54v-136h22v173H196Zm394-14v-23q75-34 118.5-102.5T752-484q0-51-21-100.5T670-674l-56-55v136h-22v-173h173v22H631l49 50q48 47 71 101.5T774-484q0 90-50 165T590-208Z"/></svg>
+        <svg viewBox="0 0 273.93 304.92">
+          <path d="M242.65,239.55c-18.91,22.91-44.88,39.13-73.54,46.04l43.35,13.6-1.8,5.73-51.72-16.23,16.23-51.72,5.72,1.8-13.18,42.02c58.9-14.06,101.22-67.36,101.22-128.36,0-46.96-25.28-90.77-65.98-114.31l2.5-4.33c42.24,24.44,68.48,69.89,68.48,118.64,0,31.74-11.11,62.68-31.28,87.12Z"/>
+          <path d="M98.76,67.95l-5.72-1.8,13.18-42.02C47.32,38.19,5,91.49,5,152.49c0,46.96,25.28,90.77,65.98,114.31l-2.5,4.33C26.24,246.69,0,201.23,0,152.49c0-31.74,11.11-62.68,31.28-87.12,18.91-22.91,44.88-39.13,73.54-46.04L61.47,5.73l1.8-5.73,51.72,16.23-16.23,51.72Z"/>
+        </svg>
       </button>
     </div>
     <script type="module" src="/src/main.js"></script>
