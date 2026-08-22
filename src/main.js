@@ -5,13 +5,19 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './hud.js';
 
 // ============================================================================
-// Yellow-filter tuning — kept together here since these get tweaked a lot.
+// Look & feel tuning — kept together here since these get tweaked a lot.
 // ============================================================================
 const YELLOW_FILTER_FRACTION = 1 / 3; // portion of all objects given the treatment
 const YELLOW_MODE = 'filter'; // 'filter' = tint over the texture, 'solid' = flat color, no texture
-const YELLOW_FILTER_COLOR = 0xffdd00; // tint color used in 'filter' mode
-const YELLOW_FILTER_STRENGTH = 0.6; // 0 = no visible tint, 1 = fully replaced by YELLOW_FILTER_COLOR
-const YELLOW_SOLID_COLOR = 0xffdd00; // flat color used in 'solid' mode
+const YELLOW_FILTER_COLOR = 0xFFEA47; // tint color used in 'filter' mode
+const YELLOW_FILTER_STRENGTH = 1.0; // 0 = no visible tint, 1 = fully replaced by YELLOW_FILTER_COLOR
+const YELLOW_SOLID_COLOR = 0xFFEA47; // flat color used in 'solid' mode
+const RENDER_EXPOSURE = 0.7; // renderer.toneMappingExposure — lower = darker overall, less washed-out/ivory highlights
+// Default-mode focus distance, as a multiple of the object's bounding radius.
+const DEFAULT_ZOOM_MULTIPLIER = 0.5;
+// In default mode, how far the user can zoom in/out from that default
+// distance, as a +/-fraction of it (see computeZoomLimits).
+const ZOOM_RANGE_FRACTION = 0.2;
 // ============================================================================
 
 const app = document.getElementById('app');
@@ -20,7 +26,8 @@ const bubbleCanvas = document.getElementById('bubbles');
 const bubbleCtx = bubbleCanvas.getContext('2d');
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x090909);
+// scene.background = new THREE.Color(0x090909);
+scene.background = new THREE.Color(0xFFEA47);
 
 const camera = new THREE.PerspectiveCamera(
   45,
@@ -34,6 +41,11 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(app.clientWidth, app.clientHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+// Without this, bright spots where lights overlap just clip to white instead
+// of rolling off — e.g. the yellow filter (#ffdd00) reads lighter/whiter
+// than its actual hex value wherever the lighting pushes past 1.0.
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = RENDER_EXPOSURE;
 app.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -171,6 +183,10 @@ let focusedObject = null;
 let transition = null;
 let autoSwitchTimer = null;
 
+// Debug mode (toggled with the '0' key): free camera, no auto-switching, no
+// zoom limits. Default mode (the normal auto-tour) is what the app starts in.
+let debugMode = false;
+
 controls.addEventListener('start', () => {
   transition = null;
   clearTimeout(autoSwitchTimer);
@@ -182,7 +198,30 @@ controls.addEventListener('end', () => {
   bobTarget = 0;
   currentStiffness = SPRING_STIFFNESS_FALL;
   currentDamping = SPRING_DAMPING_FALL;
-  scheduleAutoSwitch(POST_DRAG_SWITCH_MS);
+  if (!debugMode) scheduleAutoSwitch(POST_DRAG_SWITCH_MS);
+});
+
+function setDebugMode(on) {
+  debugMode = on;
+  clearTimeout(autoSwitchTimer);
+  if (debugMode) {
+    transition = null;
+    // Same generic bounds the controls start with before any focus is applied.
+    controls.minDistance = 0.05;
+    controls.maxDistance = 50;
+  } else {
+    if (focusedObject) {
+      const view = computeFocusView(focusedObject);
+      const limits = computeZoomLimits(view);
+      controls.minDistance = limits.min;
+      controls.maxDistance = limits.max;
+    }
+    scheduleAutoSwitch();
+  }
+}
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === '0') setDebugMode(!debugMode);
 });
 
 function buildMaterial(textures) {
@@ -390,13 +429,14 @@ function computeFocusView(object) {
 
   // The object's real bounding-sphere radius (half the box's diagonal, so it
   // fully contains every corner — half of maxDim alone would still let the
-  // camera clip through corners on non-cubic shapes) plus a random margin
-  // "n", so the camera is mathematically guaranteed to sit outside the
-  // geometry instead of just being placed at some fraction of fitDistance
-  // that could land inside it.
+  // camera clip through corners on non-cubic shapes), so the camera is
+  // mathematically guaranteed to sit outside the geometry instead of just
+  // being placed at some fraction of fitDistance that could land inside it.
+  // The default framing distance IS the closest safe distance (the max
+  // zoom-in bound below is derived from this same value), so focusing on an
+  // object starts already fully zoomed in on it.
   const boundingRadius = size.length() / 2;
-  const margin = boundingRadius * randomRange(0.15, 0.5);
-  const zoomDistance = boundingRadius + margin;
+  const zoomDistance = boundingRadius * DEFAULT_ZOOM_MULTIPLIER;
 
   const theta = randomRange(0, Math.PI * 2);
   const phi = randomRange(Math.PI * 0.3, Math.PI * 0.7);
@@ -410,17 +450,31 @@ function computeFocusView(object) {
   return { position, target: center, zoomDistance, fitDistance, boundingRadius };
 }
 
+// How far in/out the user can zoom in default mode: +/-ZOOM_RANGE_FRACTION
+// around the current default framing distance, so pinch/scroll zoom always
+// has real headroom in both directions from wherever DEFAULT_ZOOM_MULTIPLIER
+// puts the default. No anti-clip floor here by design — DEFAULT_ZOOM_MULTIPLIER
+// can intentionally sit closer than the object's bounding radius for a tight
+// close-up default, and the +/-20% range follows it there.
+function computeZoomLimits(view) {
+  return {
+    min: view.zoomDistance * (1 - ZOOM_RANGE_FRACTION),
+    max: view.zoomDistance * (1 + ZOOM_RANGE_FRACTION),
+  };
+}
+
 // Apply a focus view's distances/limits/spring state once the camera is actually there.
 function applyFocusState(view) {
   camera.near = view.zoomDistance / 100;
   camera.far = view.fitDistance * 100;
   camera.updateProjectionMatrix();
 
-  // How far in/out the user can zoom from the focused framing. Never let the
-  // near limit creep inside the object's own bounding radius, even if 0.65x
-  // the framing distance would otherwise put it there.
-  controls.minDistance = Math.max(view.zoomDistance * 0.65, view.boundingRadius * 1.05);
-  controls.maxDistance = view.zoomDistance * 1.5;
+  // How far in/out the user can zoom from the focused framing — see computeZoomLimits.
+  if (!debugMode) {
+    const limits = computeZoomLimits(view);
+    controls.minDistance = limits.min;
+    controls.maxDistance = limits.max;
+  }
 
   // Leave bobOffset/bobVelocity as they are (don't snap to 0) — bobTarget=0
   // lets the existing spring ease any residual dip out smoothly instead of

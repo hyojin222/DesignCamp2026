@@ -9,7 +9,7 @@
         margin: 0;
         height: 100%;
         overflow: hidden;
-        background: #1a1a1a;
+        background: #FFEA47;
         font-family: system-ui, -apple-system, "Malgun Gothic", sans-serif;
       }
       #app {
@@ -90,10 +90,8 @@
             </mask>
           </defs>
 
-          <rect width="1920" height="1080" fill="black" mask="url(#hud1-porthole-mask)" />
-          <circle cx="968" cy="555" r="670" fill="none" stroke="#444444" stroke-width="1.5" />
-
-          <g id="hud1-hex-ring" fill="#616161"></g>
+          <rect width="1920" height="1080" fill="#FFEA47" mask="url(#hud1-porthole-mask)" />
+          <!-- <circle cx="968" cy="555" r="670" fill="none" stroke="#444444" stroke-width="1.5" /> -->
         </svg>
       </div>
 
@@ -113,8 +111,6 @@
 
           <rect width="1920" height="1080" fill="black" mask="url(#hud2-porthole-mask)" />
           <circle cx="968" cy="555" r="670" fill="none" stroke="#444444" stroke-width="1.5" />
-
-          <g id="hud2-hex-ring" fill="#616161"></g>
 
           <g stroke="#767676" stroke-width="1.5" fill="none">
             <circle cx="159" cy="153" r="86" fill="url(#hud2-reticle-glow)" stroke="#767676" />
@@ -199,7 +195,7 @@
         </svg>
       </div>
 
-      <div id="hud-hint">1 / 2 / 3 — UI 시안 전환</div>
+      <!-- <div id="hud-hint">1 / 2 / 3 — UI 시안 전환</div> -->
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>
