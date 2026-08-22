@@ -32,15 +32,12 @@ const AMBIENT_LIGHT_INTENSITY = 0.6;
 // wall (same z, spread across x/y) in its permanent close-up + yellow look.
 // The back/forward buttons jump the camera to a different random object on
 // that wall, staying at close-up zoom throughout instead of zooming out.
-// Close-up distance, x the object's bounding radius (half the bounding box's
-// diagonal — a sphere guaranteed to fully contain the geometry from any
-// angle). Every wall object keeps spinning forever around its own fixed
-// axis, so this can't be tightened per-object toward its actual surface in
-// just the initial viewing direction — some other point on the object will
-// eventually rotate into that direction too. Bounding-radius-based distance
-// is the one framing that stays outside the object at every rotation. Sized
-// with enough headroom that even the closest manual zoom-in a user can reach
-// (ZOOM_RANGE_FRACTION below this) still clears the bounding radius.
+// Target close-up distance, x the object's bounding radius (half the
+// bounding box's diagonal) — this is the "how close/zoomed" dial. It's only
+// a target, not a hard floor: computeCloseView() below clamps the actual
+// distance to never come in closer than the object's *real* surface (see
+// INITIAL_SURFACE_SAFETY_MULTIPLIER), so tightening this can't place the
+// camera's starting position inside the mesh even when it's well under 1.
 const MIN_SAFE_ZOOM_MULTIPLIER = 0.55;
 // How far the user can zoom in/out from the focused object's close-up
 // distance, as a +/-fraction of it.
@@ -294,6 +291,34 @@ function applyYellowMaterial(group) {
   });
 }
 
+const _surfaceRayOrigin = new THREE.Vector3();
+const _surfaceRayDir = new THREE.Vector3();
+const _surfaceRaycaster = new THREE.Raycaster();
+
+// How far the object's *real* surface is from `center` along `dir`, found by
+// raycasting against the actual geometry from well outside it. Falls back to
+// boundingRadius if the ray somehow doesn't hit anything.
+function surfaceDistanceAlong(object, center, dir, boundingRadius) {
+  const farOut = boundingRadius * 3 + 1;
+  _surfaceRayOrigin.copy(center).addScaledVector(dir, farOut);
+  _surfaceRayDir.copy(dir).negate();
+  _surfaceRaycaster.set(_surfaceRayOrigin, _surfaceRayDir);
+  _surfaceRaycaster.far = farOut * 2;
+  const hits = _surfaceRaycaster.intersectObject(object, true);
+  if (!hits.length) return boundingRadius;
+  return farOut - hits[0].distance;
+}
+
+// Hard floor on the initial close-up distance, x the *real* raycast-hit
+// surface distance (not the looser bounding radius) — kept separate from
+// MIN_SAFE_ZOOM_MULTIPLIER so however tight that's tuned for "how close/
+// zoomed" the look should be, the camera's starting position can never land
+// inside the actual mesh. Only covers the object's orientation at the moment
+// it's framed, though — it keeps spinning afterward, so a low
+// MIN_SAFE_ZOOM_MULTIPLIER can still let a different part of it swing closer
+// than the camera later.
+const INITIAL_SURFACE_SAFETY_MULTIPLIER = 1.05;
+
 // Everything needed to frame one wall object close-up: its world-space
 // center, a fixed straight-on viewing direction (every object on the wall is
 // framed from the same angle, since the camera only ever pans across the
@@ -305,7 +330,11 @@ function computeCloseView(object) {
   const center = box.getCenter(new THREE.Vector3());
   const boundingRadius = size.length() / 2;
   const dir = new THREE.Vector3(0, 0, 1);
-  const closeDistance = boundingRadius * MIN_SAFE_ZOOM_MULTIPLIER;
+  const realSurfaceDistance = surfaceDistanceAlong(object, center, dir, boundingRadius);
+  const closeDistance = Math.max(
+    boundingRadius * MIN_SAFE_ZOOM_MULTIPLIER,
+    realSurfaceDistance * INITIAL_SURFACE_SAFETY_MULTIPLIER
+  );
 
   return { center, dir, closeDistance };
 }
