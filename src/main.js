@@ -42,7 +42,7 @@ const MIN_SAFE_ZOOM_MULTIPLIER = 0.55;
 // How far the user can zoom in/out from the focused object's close-up
 // distance, as a +/-fraction of it.
 const ZOOM_RANGE_FRACTION = 0.1;
-const PAN_TRANSITION_DURATION = 0.9; // seconds, eased camera pan between objects
+const PAN_TRANSITION_DURATION = 1.5; // seconds, eased camera pan between objects
 const AUTO_ADVANCE_INTERVAL = 5; // seconds between automatic forward advances (paused while dragging or in debug mode)
 // autoAdvanceTimer keeps accumulating right up until a drag starts, then
 // freezes at whatever value it was already at for the drag's whole
@@ -160,15 +160,20 @@ let goggleAspectRatio = 1038.2 / 1975.98;
 
 // Sizes the goggle shape to span the full (dynamic) HUD width, vertically
 // centered on the viewport height — called both right after it loads and on
-// every resize.
+// every resize. Applied to both #hud1-goggle-shape (the mask hole) and
+// #hud1-goggle-hit (its unmasked hit-testing twin, see the CSS comment in
+// index.html) so the interactive area always exactly matches the visible
+// cutout.
 function applyGoggleMaskBox() {
-  const shape = document.getElementById('hud1-goggle-shape');
-  if (!shape) return;
   const height = hudViewBoxWidth * goggleAspectRatio;
-  shape.setAttribute('x', 0);
-  shape.setAttribute('y', (HUD_HEIGHT - height) / 2);
-  shape.setAttribute('width', hudViewBoxWidth);
-  shape.setAttribute('height', height);
+  for (const id of ['hud1-goggle-shape', 'hud1-goggle-hit']) {
+    const shape = document.getElementById(id);
+    if (!shape) continue;
+    shape.setAttribute('x', 0);
+    shape.setAttribute('y', (HUD_HEIGHT - height) / 2);
+    shape.setAttribute('width', hudViewBoxWidth);
+    shape.setAttribute('height', height);
+  }
 }
 
 // Keeps the HUD's viewBox width (and everything sized off it) matched to the
@@ -202,20 +207,27 @@ async function loadGoggleMask() {
     const [, , vbWidth, vbHeight] = viewBoxParts.length === 4 ? viewBoxParts : [0, 0, 1, 1];
     if (vbWidth > 0) goggleAspectRatio = vbHeight / vbWidth;
 
-    const nested = document.createElementNS(SVG_NS, 'svg');
-    nested.setAttribute('id', 'hud1-goggle-shape');
-    nested.setAttribute('viewBox', source.getAttribute('viewBox') || `0 0 1 ${goggleAspectRatio}`);
-    nested.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-    // The mask hole is whatever's filled black here, regardless of the
-    // source SVG's own fill/class styling — only its path shapes matter.
-    for (const p of paths) {
-      const path = document.createElementNS(SVG_NS, 'path');
-      path.setAttribute('d', p.getAttribute('d'));
-      path.setAttribute('fill', 'black');
-      nested.appendChild(path);
+    const viewBox = source.getAttribute('viewBox') || `0 0 1 ${goggleAspectRatio}`;
+    // Builds the two nested-svg copies of the shape that applyGoggleMaskBox
+    // sizes identically: `fill` is "black" for the mask hole and
+    // "transparent" for its unmasked hit-testing twin (still "painted" for
+    // hit-testing purposes despite being invisible — see the CSS comment).
+    function buildShape(id, fill) {
+      const nested = document.createElementNS(SVG_NS, 'svg');
+      nested.setAttribute('id', id);
+      nested.setAttribute('viewBox', viewBox);
+      nested.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+      for (const p of paths) {
+        const path = document.createElementNS(SVG_NS, 'path');
+        path.setAttribute('d', p.getAttribute('d'));
+        path.setAttribute('fill', fill);
+        nested.appendChild(path);
+      }
+      return nested;
     }
 
-    document.getElementById('hud1-goggle-shape')?.replaceWith(nested);
+    document.getElementById('hud1-goggle-shape')?.replaceWith(buildShape('hud1-goggle-shape', 'black'));
+    document.getElementById('hud1-goggle-hit')?.replaceWith(buildShape('hud1-goggle-hit', 'transparent'));
     applyGoggleMaskBox();
   } catch (err) {
     console.error('goggle mask load failed, keeping fallback shape', err);
@@ -611,17 +623,23 @@ function applyObjectRotation(yawDelta, pitchDelta) {
   group.quaternion.premultiply(_yawQuat).premultiply(_pitchQuat);
 }
 
-renderer.domElement.addEventListener('pointerdown', (e) => {
+// Attached to #hud1-svg (the outer, never-replaced element) rather than the
+// swappable #hud1-goggle-hit shape itself or the canvas — only that shape
+// has pointer-events on within #hud1-svg (see its CSS), so a pointerdown
+// reaching here always originated from within the goggle cutout, keeping
+// the drag-to-rotate gesture (and the grab cursor) confined to it instead of
+// the whole canvas.
+hud1Svg.addEventListener('pointerdown', (e) => {
   if (debugMode || currentObjectIndex < 0 || rotatePointerId !== null) return;
   rotatePointerId = e.pointerId;
   lastPointerX = e.clientX;
   lastPointerY = e.clientY;
   objectRotVelYaw = 0;
   objectRotVelPitch = 0;
-  renderer.domElement.setPointerCapture(e.pointerId);
+  hud1Svg.setPointerCapture(e.pointerId);
   onInteractionDragStart();
 });
-renderer.domElement.addEventListener('pointermove', (e) => {
+hud1Svg.addEventListener('pointermove', (e) => {
   if (e.pointerId !== rotatePointerId) return;
   const dx = e.clientX - lastPointerX;
   const dy = e.clientY - lastPointerY;
@@ -640,8 +658,8 @@ function endObjectRotateDrag(e) {
   rotatePointerId = null;
   onInteractionDragEnd();
 }
-renderer.domElement.addEventListener('pointerup', endObjectRotateDrag);
-renderer.domElement.addEventListener('pointercancel', endObjectRotateDrag);
+hud1Svg.addEventListener('pointerup', endObjectRotateDrag);
+hud1Svg.addEventListener('pointercancel', endObjectRotateDrag);
 
 // Wheel dollies the camera toward/away from the focused object along its
 // fixed viewing direction, clamped to the zoom limits from applyZoomLimits().
@@ -664,6 +682,11 @@ function setDebugMode(on) {
   panTween = null;
   rotatePointerId = null;
   controls.enabled = debugMode;
+  // #hud1-goggle-hit otherwise intercepts drag input inside the goggle
+  // shape (see its CSS) — debug mode's TrackballControls needs the whole
+  // canvas free to roam the camera, so this rule (index.html) turns that
+  // shape's pointer-events back off for as long as debug mode is on.
+  hud1Svg.classList.toggle('goggle-hit-disabled', debugMode);
   if (debugMode) {
     // Same generic bounds the controls start with before any object is shown.
     controls.minDistance = 0.05;
