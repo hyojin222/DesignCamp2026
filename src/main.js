@@ -621,8 +621,18 @@ let panTween = null; // { fromPos, toPos, fromTarget, toTarget, start } — ease
 let autoAdvanceTimer = 0;
 let dragging = false;
 
-// Debug mode (toggled with the '0' key): free camera, no zoom limits.
-// Default mode (the wall gallery) is what the app starts in.
+// Set VITE_DEBUG=true (in a local, gitignored .env.local — see
+// .env.local.example) and restart the dev server to start the app straight
+// into debug mode (free camera + the object picker, see
+// setDebugMode()/renderDebugObjectList()). Vite only exposes env vars
+// prefixed VITE_ to client code, and only inlines them at build time, so
+// this can never end up true in the GitHub Pages build unless that
+// workflow explicitly sets it — there's deliberately no in-app control
+// (keypress or UI toggle) for this dev-only tool.
+const DEBUG = import.meta.env.VITE_DEBUG === 'true';
+// Free camera, no zoom limits, while true. Always starts equal to DEBUG
+// above (see the setDebugMode(DEBUG) call near its definition) — nothing at
+// runtime reassigns this except setDebugMode itself.
 let debugMode = false;
 
 // How far the user can zoom in/out from the focused object's close-up
@@ -879,9 +889,11 @@ function setDebugMode(on) {
   }
 }
 
-window.addEventListener('keydown', (e) => {
-  if (e.key === '0') setDebugMode(!debugMode);
-});
+// Applies DEBUG's value once at startup — the only place debug mode is ever
+// switched on, since there's no runtime control for it (see DEBUG's comment
+// above). renderDebugObjectList() hasn't necessarily run yet at this point,
+// but that only affects what's *in* the (still correctly shown/hidden) list.
+setDebugMode(DEBUG);
 
 // Turn count backing the CSS custom property --spin (see index.html): every
 // rule there builds its rotate() off this ever-growing angle instead of a
