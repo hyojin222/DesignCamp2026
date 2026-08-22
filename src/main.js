@@ -32,17 +32,21 @@ const AMBIENT_LIGHT_INTENSITY = 0.6;
 // wall (same z, spread across x/y) in its permanent close-up + yellow look.
 // The back/forward buttons jump the camera to a different random object on
 // that wall, staying at close-up zoom throughout instead of zooming out.
-const CLOSE_ZOOM_MULTIPLIER = 0.3; // close-up distance, x the object's bounding radius
-// The close-up distance is never allowed under this, x the object's bounding
-// radius (half the bounding box's diagonal — a sphere guaranteed to fully
-// contain the geometry from any angle) — so however tight CLOSE_ZOOM_MULTIPLIER
-// is set, the camera can't end up inside the object.
-const MIN_SAFE_ZOOM_MULTIPLIER = 1.05;
+// Close-up distance, x the object's bounding radius (half the bounding box's
+// diagonal — a sphere guaranteed to fully contain the geometry from any
+// angle). Every wall object keeps spinning forever around its own fixed
+// axis, so this can't be tightened per-object toward its actual surface in
+// just the initial viewing direction — some other point on the object will
+// eventually rotate into that direction too. Bounding-radius-based distance
+// is the one framing that stays outside the object at every rotation. Sized
+// with enough headroom that even the closest manual zoom-in a user can reach
+// (ZOOM_RANGE_FRACTION below this) still clears the bounding radius.
+const MIN_SAFE_ZOOM_MULTIPLIER = 0.75;
 // How far the user can zoom in/out from the focused object's close-up
 // distance, as a +/-fraction of it.
 const ZOOM_RANGE_FRACTION = 0.1;
 const PAN_TRANSITION_DURATION = 0.9; // seconds, eased camera pan between objects
-const AUTO_ADVANCE_INTERVAL = 10; // seconds between automatic forward advances (paused while dragging or in debug mode)
+const AUTO_ADVANCE_INTERVAL = 5; // seconds between automatic forward advances (paused while dragging or in debug mode)
 // How much camera rotation a drag produces (TrackballControls' rotateSpeed) —
 // this is purely the user-driven drag-to-rotate rate, not the objects' own
 // idle self-spin.
@@ -357,26 +361,6 @@ function applyYellowMaterial(group) {
   });
 }
 
-const _surfaceRayOrigin = new THREE.Vector3();
-const _surfaceRayDir = new THREE.Vector3();
-const _surfaceRaycaster = new THREE.Raycaster();
-
-// How far the object's *real* surface is from `center` along `dir`, found by
-// raycasting against the actual geometry from well outside it. Tighter than
-// the conservative bounding-sphere radius for most viewing angles on
-// non-spherical shapes, while still guaranteed not to clip through the mesh.
-// Falls back to boundingRadius if the ray somehow doesn't hit anything.
-function surfaceDistanceAlong(object, center, dir, boundingRadius) {
-  const farOut = boundingRadius * 3 + 1;
-  _surfaceRayOrigin.copy(center).addScaledVector(dir, farOut);
-  _surfaceRayDir.copy(dir).negate();
-  _surfaceRaycaster.set(_surfaceRayOrigin, _surfaceRayDir);
-  _surfaceRaycaster.far = farOut * 2;
-  const hits = _surfaceRaycaster.intersectObject(object, true);
-  if (!hits.length) return boundingRadius;
-  return farOut - hits[0].distance;
-}
-
 // Everything needed to frame one wall object close-up: its world-space
 // center, a fixed straight-on viewing direction (every object on the wall is
 // framed from the same angle, since the camera only ever pans across the
@@ -388,14 +372,7 @@ function computeCloseView(object) {
   const center = box.getCenter(new THREE.Vector3());
   const boundingRadius = size.length() / 2;
   const dir = new THREE.Vector3(0, 0, 1);
-
-  // MIN_SAFE_ZOOM_MULTIPLIER is applied against the *real* surface distance
-  // along this specific direction (not the one-size-fits-all bounding
-  // sphere), so CLOSE_ZOOM_MULTIPLIER actually has room to pull the framing
-  // in tight on most objects instead of always losing to a floor sized for
-  // the worst-case corner-on view.
-  const realSurfaceDistance = surfaceDistanceAlong(object, center, dir, boundingRadius);
-  const closeDistance = Math.max(boundingRadius * CLOSE_ZOOM_MULTIPLIER, realSurfaceDistance * MIN_SAFE_ZOOM_MULTIPLIER);
+  const closeDistance = boundingRadius * MIN_SAFE_ZOOM_MULTIPLIER;
 
   return { center, dir, closeDistance };
 }
