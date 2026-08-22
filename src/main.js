@@ -68,6 +68,14 @@ const OBJECT_ROTATE_INERTIA_STOP = 0.0005; // rad/frame below which coasting jus
 // current distance from the focused object (exponential, so it feels the
 // same whether zoomed in tight or backed off toward the zoom limit).
 const WHEEL_ZOOM_SPEED = 0.0015;
+// Typewriter word readout (top-left corner) timing — see updateTypewriter().
+const TYPEWRITER_CHAR_INTERVAL = 0.05; // seconds per character, typing and erasing alike
+const TYPEWRITER_HOLD_DURATION = 1.2; // seconds the fully-typed word stays before erasing
+const TYPEWRITER_PRE_TYPE_DELAY = 0.7; // seconds blank (cursor only) after erasing, before the next word starts
+// Random-object button press/release rotation — see the pointerdown/up
+// listeners near the bottom of this file.
+const BTN_TILT_DURATION = 0.25; // seconds for the quick press-in tilt
+const BTN_SPIN_DURATION = 0.7; // seconds for the release-triggered spin back upright
 // ============================================================================
 
 const app = document.getElementById('app');
@@ -77,6 +85,7 @@ const btnRandomObject = document.getElementById('btn-random-object');
 const hud1Svg = document.getElementById('hud1-svg');
 const hud1MaskBg = document.getElementById('hud1-mask-bg');
 const hud1Frame = document.getElementById('hud1-frame');
+const wordTypewriterEl = document.getElementById('word-typewriter-text');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(BG_YELLOW_COLOR);
@@ -265,6 +274,149 @@ async function loadButtonIcon(button, url) {
   }
 }
 const buttonIconReady = loadButtonIcon(btnRandomObject, `${BASE}icon/re.svg`);
+
+// id -> { en, ru, zh, ja, fr, th, hi, ar, he } translations (source/data/words.json,
+// copied verbatim to public/data/ by scripts/generate-assets.mjs), cycled
+// through by the typewriter readout below. Not every wall object has an
+// entry (e.g. croissant) — the typewriter just stays blank for those.
+const wordsById = new Map();
+
+// A trailing digit marks a separate model of the same food (e.g. "cookie2"
+// alongside "cookie") — strip it so those share one words.json entry
+// instead of each needing their own.
+function wordsLookupId(id) {
+  return id?.replace(/\d+$/, '');
+}
+async function loadWordsData() {
+  try {
+    const res = await fetch(`${BASE}data/words.json`);
+    if (!res.ok) return;
+    const list = await res.json();
+    for (const { id, words } of list) wordsById.set(id, words);
+  } catch (err) {
+    console.error('words data load failed', err);
+  } finally {
+    // The very first focusObject() call can land before this fetch
+    // resolves, leaving nothing to show — kick the typewriter off now if
+    // so, rather than waiting for the next object change.
+    if (typewriterState === 'idle' && currentObjectIndex >= 0) {
+      startTypewriterCycle(currentObjectIndex);
+    }
+  }
+}
+loadWordsData();
+
+// --- Top-left typewriter word readout --------------------------------------
+// Cycles through the focused object's translations in random, non-repeating
+// order: types one in left-to-right, holds it a beat, erases it right-to-
+// left (shrinking the revealed length back to 0), pauses blank for a beat,
+// then types the next. A change of focused object (via onFocusedObjectChanged,
+// called from focusObject) interrupts this at whatever point it's at —
+// finishing or not doesn't matter, it just erases from wherever it is and
+// then starts the new object's cycle (after that same blank pause) once the
+// erase finishes.
+let typewriterState = 'idle'; // 'idle' | 'typing' | 'holding' | 'erasing' | 'waiting'
+let typewriterObjectIndex = -1; // which wallObjects index the current word belongs to
+let typewriterLang = null; // language just shown, so the next pick never repeats it
+let typewriterText = ''; // full text of the word currently being typed/erased
+let typewriterRevealed = 0; // how many characters of typewriterText are currently shown
+let typewriterCharTimer = 0; // accumulates dt between per-character reveal/erase steps
+let typewriterHoldTimer = 0;
+let typewriterWaitTimer = 0;
+let typewriterPendingObjectIndex = null; // set when a mid-cycle object change is waiting on the erase to finish
+
+function pickTypewriterLanguage(words) {
+  const langs = Object.keys(words);
+  const pool = typewriterLang ? langs.filter((l) => l !== typewriterLang) : langs;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function startTypewriterCycle(index) {
+  typewriterObjectIndex = index;
+  const words = wordsById.get(wordsLookupId(wallObjects[index]?.id));
+  if (!words) {
+    typewriterState = 'idle';
+    typewriterText = '';
+    typewriterRevealed = 0;
+    wordTypewriterEl.textContent = '';
+    return;
+  }
+  typewriterLang = pickTypewriterLanguage(words);
+  typewriterText = words[typewriterLang];
+  typewriterRevealed = 0;
+  typewriterCharTimer = 0;
+  typewriterState = 'typing';
+}
+
+// Called from focusObject() whenever the focused object actually changes.
+function onFocusedObjectChanged(index) {
+  if (typewriterRevealed === 0) {
+    // Nothing currently shown (idle, or already in the blank post-erase
+    // wait) — just (re)target that wait at the new object, restarting the
+    // pause so a burst of object changes doesn't type mid-burst.
+    typewriterPendingObjectIndex = index;
+    typewriterState = 'waiting';
+    typewriterWaitTimer = 0;
+  } else {
+    typewriterPendingObjectIndex = index;
+    typewriterState = 'erasing';
+    typewriterCharTimer = 0;
+  }
+}
+
+function updateTypewriter(dt) {
+  if (typewriterState === 'idle') return;
+
+  if (typewriterState === 'typing') {
+    typewriterCharTimer += dt;
+    while (typewriterCharTimer >= TYPEWRITER_CHAR_INTERVAL && typewriterRevealed < typewriterText.length) {
+      typewriterCharTimer -= TYPEWRITER_CHAR_INTERVAL;
+      typewriterRevealed++;
+    }
+    wordTypewriterEl.textContent = typewriterText.slice(0, typewriterRevealed);
+    if (typewriterRevealed >= typewriterText.length) {
+      typewriterState = 'holding';
+      typewriterHoldTimer = 0;
+    }
+    return;
+  }
+
+  if (typewriterState === 'holding') {
+    typewriterHoldTimer += dt;
+    if (typewriterHoldTimer >= TYPEWRITER_HOLD_DURATION) {
+      typewriterState = 'erasing';
+      typewriterCharTimer = 0;
+    }
+    return;
+  }
+
+  if (typewriterState === 'erasing') {
+    typewriterCharTimer += dt;
+    while (typewriterCharTimer >= TYPEWRITER_CHAR_INTERVAL && typewriterRevealed > 0) {
+      typewriterCharTimer -= TYPEWRITER_CHAR_INTERVAL;
+      typewriterRevealed--;
+    }
+    wordTypewriterEl.textContent = typewriterText.slice(0, typewriterRevealed);
+    if (typewriterRevealed <= 0) {
+      // Blank-pause before the next word, rather than typing right away —
+      // target is whatever onFocusedObjectChanged left pending, or (if this
+      // erase finished on its own, uninterrupted) the same object again for
+      // its next non-repeating language.
+      if (typewriterPendingObjectIndex === null) typewriterPendingObjectIndex = typewriterObjectIndex;
+      typewriterState = 'waiting';
+      typewriterWaitTimer = 0;
+    }
+    return;
+  }
+
+  // 'waiting'
+  typewriterWaitTimer += dt;
+  if (typewriterWaitTimer >= TYPEWRITER_PRE_TYPE_DELAY) {
+    const index = typewriterPendingObjectIndex;
+    typewriterPendingObjectIndex = null;
+    startTypewriterCycle(index);
+  }
+}
 
 const clock = new THREE.Clock();
 let elapsedTime = 0;
@@ -516,6 +668,7 @@ function pickNextObjectIndex() {
 // for the very first object; every later call eases the camera across the
 // wall from wherever it currently is, staying at close-up zoom the whole way.
 function focusObject(index, { instant = false } = {}) {
+  if (index !== currentObjectIndex) onFocusedObjectChanged(index);
   currentObjectIndex = index;
   rememberSeen(index);
   autoAdvanceTimer = 0;
@@ -702,41 +855,37 @@ window.addEventListener('keydown', (e) => {
 
 // Turn count backing the CSS custom property --spin (see index.html): every
 // rule there builds its rotate() off this ever-growing angle instead of a
-// fixed 0deg/-14deg, so the handoff from wherever the spin animation just
-// stopped back to the hover/base rule is always a short ~14deg hop, no
-// matter how many spins have already played.
+// fixed 0deg/-14deg, so each step's jump is always a short, intentional one
+// no matter how many press/release cycles have already played.
 let spinCount = 0;
 btnRandomObject.style.setProperty('--spin', spinCount);
+btnRandomObject.style.setProperty('--tilt', '0deg');
 
-// Keeps --spin-tilt (see the keyframe comment in index.html) matched to
-// live hover state at all times, not just at click — so if the pointer
-// enters or leaves mid-spin, the animation's own end target re-resolves
-// (a running CSS animation re-reads var() every frame) toward wherever the
-// icon is actually about to land: tilted if still hovered, flat at 360 if
-// not, decided by whichever is true right as it gets there.
-function updateSpinTilt(hovering) {
-  btnRandomObject.style.setProperty('--spin-tilt', hovering ? '-14deg' : '0deg');
+function setBtnTransitionDuration(seconds) {
+  btnRandomObject.style.transitionDuration = `${seconds}s`;
 }
-updateSpinTilt(false);
-btnRandomObject.addEventListener('pointerenter', () => updateSpinTilt(true));
-btnRandomObject.addEventListener('pointerleave', () => updateSpinTilt(false));
+
+btnRandomObject.addEventListener('pointerdown', () => {
+  setBtnTransitionDuration(BTN_TILT_DURATION);
+  btnRandomObject.style.setProperty('--tilt', '-14deg');
+});
+
+function releaseBtnTilt() {
+  setBtnTransitionDuration(BTN_SPIN_DURATION);
+  // Bumping --spin and resetting --tilt to 0deg together jumps the
+  // *absolute* target straight from spin*360-14 to (spin+1)*360 — a bit
+  // over one full clockwise revolution — landing directly upright in this
+  // one motion, identical to the very first rotation before any of this
+  // happened, with no separate settle step needed.
+  spinCount++;
+  btnRandomObject.style.setProperty('--spin', spinCount);
+  btnRandomObject.style.setProperty('--tilt', '0deg');
+}
+btnRandomObject.addEventListener('pointerup', releaseBtnTilt);
+btnRandomObject.addEventListener('pointercancel', releaseBtnTilt);
 
 btnRandomObject.addEventListener('click', () => {
   focusObject(pickNextObjectIndex());
-  // Restart the click-spin animation even on a rapid re-click: removing the
-  // class doesn't take effect until the next reflow, so force one before
-  // re-adding it — otherwise the browser just no-ops the "same" class add.
-  btnRandomObject.classList.remove('spin');
-  void btnRandomObject.offsetWidth;
-  btnRandomObject.classList.add('spin');
-});
-btnRandomObject.addEventListener('animationend', () => {
-  // Bumped here, in lockstep with removing the class, so the instant the
-  // spin animation's rule stops applying, --spin already matches the angle
-  // it just finished at (see the CSS comment for why that match matters).
-  spinCount++;
-  btnRandomObject.style.setProperty('--spin', spinCount);
-  btnRandomObject.classList.remove('spin');
 });
 
 function loadModel(model) {
@@ -817,6 +966,8 @@ window.addEventListener('resize', () => {
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
   elapsedTime += dt;
+
+  updateTypewriter(dt);
 
   if (!dragging && !debugMode && currentObjectIndex >= 0) {
     autoAdvanceTimer += dt;

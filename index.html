@@ -12,12 +12,24 @@
          separate "Noto Sans Greek" request. -->
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500&family=Noto+Sans+Arabic:wght@400;500&family=Noto+Sans+Georgian:wght@400;500&family=Noto+Sans+Hebrew:wght@400;500&family=Noto+Sans+JP:wght@400;500&family=Noto+Sans+KR:wght@400;500&family=Noto+Sans+SC:wght@400;500&family=Noto+Sans+Sinhala:wght@400;500&family=Noto+Sans+Thai:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500&family=Noto+Sans+Arabic:wght@400;500&family=Noto+Sans+Devanagari:wght@400;500&family=Noto+Sans+Georgian:wght@400;500&family=Noto+Sans+Hebrew:wght@400;500&family=Noto+Sans+JP:wght@400;500&family=Noto+Sans+KR:wght@400;500&family=Noto+Sans+SC:wght@400;500&family=Noto+Sans+Sinhala:wght@400;500&family=Noto+Sans+Thai:wght@400;500&display=swap"
+    />
+    <!-- The top-left typewriter word readout (main.js's updateTypewriter) uses
+         this for its Korean/Latin text; --font-word-pop below falls back to
+         --font-noto for every other script it can show (Cyrillic, Chinese,
+         Japanese, Thai, Hindi, Arabic, Hebrew) since Pyeojin Gothic itself
+         only ships Korean/Latin glyphs. -->
+    <link
+      rel="stylesheet"
+      as="style"
+      crossorigin
+      href="https://cdn.jsdelivr.net/gh/Jihwan-Suh/PyeojinGothic/CSS/pyeojin-font.css"
     />
     <style>
       :root {
         --font-noto: "Noto Sans KR", "Noto Sans", "Noto Sans JP", "Noto Sans SC", "Noto Sans Thai", "Noto Sans Arabic",
-          "Noto Sans Hebrew", "Noto Sans Georgian", "Noto Sans Sinhala", system-ui, sans-serif;
+          "Noto Sans Hebrew", "Noto Sans Georgian", "Noto Sans Devanagari", "Noto Sans Sinhala", system-ui, sans-serif;
+        --font-word-pop: "PyeojinGothic", var(--font-noto);
       }
       html, body {
         margin: 0;
@@ -25,6 +37,11 @@
         overflow: hidden;
         background: #000000;
         font-family: var(--font-noto);
+        /* No text/selection anywhere — this is a kiosk-style gallery, not a
+           document, and a stray drag-select easily fires instead of (or
+           alongside) the custom drag-to-rotate gesture below. */
+        user-select: none;
+        -webkit-user-select: none;
       }
       #app {
         position: relative;
@@ -33,6 +50,14 @@
       }
       canvas {
         display: block;
+      }
+      /* Same reasoning as the user-select rule above, for images: without
+         this, starting a drag on the button/goggle SVGs (or the canvas in
+         some browsers) can kick off the browser's native "drag this image
+         out" ghost instead of/alongside the custom pointer-driven drag. */
+      img, svg, canvas {
+        -webkit-user-drag: none;
+        user-drag: none;
       }
       #status {
         position: absolute;
@@ -48,17 +73,32 @@
          visible while it's still settling into its final state. Hidden once
          every async load (models + goggle mask + button icon, see the
          Promise.all in main.js) has settled. Color matches BG_YELLOW_COLOR
-         in main.js — keep the two in sync if that constant ever changes. */
+         in main.js — keep the two in sync if that constant ever changes.
+         #loading-title is a child of this element (not a sibling with its
+         own opacity/transition) specifically so the two fade out as one
+         single object — a lone `opacity` transition on the parent fades its
+         whole subtree together, rather than title and background each
+         fading independently and potentially drifting out of sync. */
       #loading-screen {
         position: fixed;
         inset: 0;
         z-index: 500;
         background: #fff075;
         transition: opacity 0.3s ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
       #loading-screen.loading-screen-hidden {
         opacity: 0;
         pointer-events: none;
+      }
+      #loading-title {
+        color: #292929;
+        font-family: var(--font-word-pop);
+        font-size: 128px;
+        font-weight: 800;
+        letter-spacing: -0.05em;
       }
       #hud-1 {
         position: fixed;
@@ -70,6 +110,57 @@
         display: block;
         width: 100%;
         height: 100%;
+      }
+      /* Top-left typewriter word readout (main.js's updateTypewriter),
+         cycling through the focused object's translations. Sits above
+         #hud-1 (100) so it always reads clearly as its own HUD label,
+         regardless of the goggle frame/cutout underneath it.
+
+         A fixed-height flex row, center-aligned: this is what keeps the
+         cursor's Y position rock-solid across every script this readout
+         ever shows, without the per-language baseline correction this used
+         to need (Arabic/Chinese fonts sit noticeably lower than the rest of
+         this font stack, since each script here comes from a *different*
+         font file with its own ascent/descent metrics — text laid out the
+         ordinary inline way shares one baseline across those metrics, so
+         the cursor visibly jumped every time the language changed). Flex
+         centering only cares about each child's own box height, not its
+         font's baseline, and the cursor (see below) has its own fixed
+         height completely independent of #word-typewriter-text's font —
+         so its center is identical no matter what's typed next to it. */
+      #word-typewriter {
+        position: fixed;
+        top: 18px;
+        left: 18px;
+        z-index: 150;
+        pointer-events: none;
+        display: flex;
+        align-items: center;
+        height: 24px;
+        color: #fff64a;
+        font-family: var(--font-word-pop);
+        font-size: 20px;
+        font-weight: 100;
+        white-space: nowrap;
+      }
+      /* A plain drawn bar, not a "|" glyph — a glyph would still be laid
+         out (and thus vertically positioned) according to whichever font
+         ends up rendering it, reintroducing the same per-script jitter this
+         is meant to fix. A fixed-size box has no such font dependency: its
+         height (and so its centered position in the flex row above) never
+         changes, regardless of #word-typewriter-text's current language. */
+      #word-typewriter-cursor {
+        flex: none;
+        width: 1px;
+        height: 20px;
+        margin-left: 3px;
+        background: currentColor;
+        animation: word-typewriter-blink 1s step-end infinite;
+      }
+      @keyframes word-typewriter-blink {
+        50% {
+          opacity: 0;
+        }
       }
       /* Real (unmasked) copy of the goggle shape, painted transparent and
          sitting on top of #hud1-frame in the same SVG — its only job is
@@ -102,7 +193,7 @@
       #btn-random-object {
         position: fixed;
         left: 50%;
-        bottom: 30px;
+        bottom: 50px;
         z-index: 200;
         padding: 0;
         border: none;
@@ -112,70 +203,41 @@
         opacity: 1;
         /* translateX(-50%) is relative to the element's own width, so its
            midpoint (not its left edge) lands on the 50% viewport line —
-           folded into every transform value below (base/hover/spin) since
-           each one overwrites `transform` wholesale, not just the rotation.
-           --spin (an integer turn count, bumped once per completed spin in
-           main.js) keeps every rule's rotate() built off the *same*
-           ever-growing angle instead of wrapping back to a fixed 0deg/-14deg.
-           Without that, handing off from the spin animation's end angle
-           (which keeps climbing: 346deg, 706deg, 1066deg, ...) back to a
-           rule pinned at a fixed small angle is a huge numeric gap, and the
-           0.25s transition covers that whole gap just as fast as the short
-           hops it's meant for — reading as an instant snap instead of an
-           eased return, right whenever the mouse leaves the button mid-spin
-           or the instant after a click. Building every rule off --spin
-           keeps that gap at a constant 14deg no matter how many spins have
-           played. */
-        transform: translateX(-50%) rotate(calc(var(--spin, 0) * 360deg));
+           folded into the transform below since it overwrites `transform`
+           wholesale, not just the rotation.
+
+           Rotation is built from two main.js-driven custom properties:
+           --spin is an integer turn count, bumped once per press+release
+           cycle (on pointerup); --tilt is -14deg while pressed and 0deg the
+           rest of the time. Press (pointerdown) tilts counter-clockwise by
+           transitioning --tilt to -14deg — a quick hop, using this rule's
+           own 0.25s transition. Release (pointerup) bumps --spin AND resets
+           --tilt to 0deg together, so the *absolute* target jumps straight
+           from spin*360-14 to (spin+1)*360 in one motion — a bit over one
+           full clockwise revolution — landing directly upright, visually
+           identical to the very first rotation before any of this happened
+           (main.js switches to a slower transition-duration for this step,
+           so the spin actually reads as a spin). Building everything off
+           --spin like this (rather than resetting to a fixed 0deg/-14deg)
+           keeps every step's jump small and intentional instead of an
+           arbitrary numeric gap that the transition would otherwise cover
+           unnaturally fast. */
+        transform: translateX(-50%) rotate(calc(var(--spin, 0) * 360deg + var(--tilt, 0deg)));
         transition: transform 0.25s ease;
-      }
-      #btn-random-object:hover {
-        transform: translateX(-50%) rotate(calc(var(--spin, 0) * 360deg - 14deg));
-      }
-      /* One-shot clockwise spin on click, toggled via .spin in main.js
-         (removed again on 'animationend' so it can replay every click). An
-         active animation overrides the :hover transform above for its
-         duration — starting from that same -14deg tilt (instead of snapping
-         to 0 first) so a hover-then-click reads as one continuous motion,
-         and ending a full turn past it so it lands back at the tilt too.
-         forwards keeps the element pinned at the end-of-spin angle for the
-         instant between the animation finishing and 'animationend' actually
-         removing the class — without it (default fill-mode: none) the style
-         can revert a frame early, which is its own small source of the same
-         kind of jump this rule is otherwise trying to avoid. main.js bumps
-         --spin in that same 'animationend' handler, so the moment the class
-         drops, the hover/base rules above already agree with where this
-         animation just left off. --spin-tilt (also main.js, kept live off
-         hover enter/leave the whole time the button exists, not just during
-         a spin) is what that agreement depends on: it's -14deg while
-         hovered and 0deg while not, so the 'to' keyframe below lands on
-         exactly the hover or base rule's own angle for whichever one
-         applies once the class drops — including a hover/unhover that
-         happens mid-spin, since a running animation still re-resolves a
-         var() every frame. */
-      #btn-random-object.spin {
-        animation: btn-random-object-spin 0.7s ease-out forwards;
-      }
-      @keyframes btn-random-object-spin {
-        from {
-          transform: translateX(-50%) rotate(calc(var(--spin, 0) * 360deg - 14deg));
-        }
-        to {
-          transform: translateX(-50%) rotate(calc((var(--spin, 0) + 1) * 360deg + var(--spin-tilt, -14deg)));
-        }
       }
       #btn-random-object svg {
         display: block;
         width: 164px;
         height: 164px;
-        fill: #fff81f;
+        fill: #fff64a;
       }
     </style>
   </head>
   <body>
     <div id="app">
       <div id="status">불러오는 중...</div>
-      <div id="loading-screen"></div>
+      <div id="loading-screen"><div id="loading-title">낯선 식탁</div></div>
+      <div id="word-typewriter"><span id="word-typewriter-text"></span><span id="word-typewriter-cursor"></span></div>
 
       <!-- Goggle-shaped porthole frame. Its fill (id="hud1-frame") is driven
            from main.js, in sync with the scene background color. The
