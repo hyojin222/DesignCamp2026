@@ -24,12 +24,6 @@
       canvas:active {
         cursor: grabbing;
       }
-      #bubbles {
-        position: absolute;
-        inset: 0;
-        z-index: 5;
-        pointer-events: none;
-      }
       #status {
         position: absolute;
         bottom: 16px;
@@ -71,13 +65,13 @@
         transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
       }
       .ui-btn svg {
-        width: 26px;
-        height: 26px;
+        width: 50px;
+        height: 50px;
         fill: currentColor;
       }
       .ui-btn--back {
         top: 50%;
-        left: 32px;
+        left: 20px;
         transform: translateY(-50%);
       }
       .ui-btn--back:hover {
@@ -85,7 +79,7 @@
       }
       .ui-btn--forward {
         top: 50%;
-        right: 32px;
+        right: 20px;
         transform: translateY(-50%);
       }
       .ui-btn--forward:hover {
@@ -95,7 +89,6 @@
   </head>
   <body>
     <div id="app">
-      <canvas id="bubbles"></canvas>
       <div id="status">불러오는 중...</div>
 
       <!-- Goggle-shaped porthole frame. Its fill (id="hud1-frame") is driven

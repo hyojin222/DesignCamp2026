@@ -41,22 +41,32 @@ const AMBIENT_LIGHT_INTENSITY = 0.6;
 // is the one framing that stays outside the object at every rotation. Sized
 // with enough headroom that even the closest manual zoom-in a user can reach
 // (ZOOM_RANGE_FRACTION below this) still clears the bounding radius.
-const MIN_SAFE_ZOOM_MULTIPLIER = 0.75;
+const MIN_SAFE_ZOOM_MULTIPLIER = 0.55;
 // How far the user can zoom in/out from the focused object's close-up
 // distance, as a +/-fraction of it.
 const ZOOM_RANGE_FRACTION = 0.1;
 const PAN_TRANSITION_DURATION = 0.9; // seconds, eased camera pan between objects
 const AUTO_ADVANCE_INTERVAL = 5; // seconds between automatic forward advances (paused while dragging or in debug mode)
-// How much camera rotation a drag produces (TrackballControls' rotateSpeed) —
-// this is purely the user-driven drag-to-rotate rate, not the objects' own
-// idle self-spin.
-const DRAG_ROTATE_SPEED = 2.5;
+// Free-camera rotate speed used only in debug mode (TrackballControls'
+// rotateSpeed) — the normal drag-to-rotate-the-object interaction below has
+// its own OBJECT_ROTATE_SPEED, since it isn't driven by TrackballControls.
+const DEBUG_DRAG_ROTATE_SPEED = 2.5;
+// Radians the focused object turns per pixel of pointer drag. This is what
+// makes dragging spin the object itself (camera fixed) instead of orbiting
+// the camera around it.
+const OBJECT_ROTATE_SPEED = 0.008;
+// How quickly the object's drag-rotation coasts to a stop after release —
+// closer to 1 glides longer, closer to 0 stops almost immediately.
+const OBJECT_ROTATE_INERTIA_DAMPING = 0.92;
+const OBJECT_ROTATE_INERTIA_STOP = 0.0005; // rad/frame below which coasting just snaps to 0
+// How much the camera dollies per wheel-scroll unit, as a fraction of its
+// current distance from the focused object (exponential, so it feels the
+// same whether zoomed in tight or backed off toward the zoom limit).
+const WHEEL_ZOOM_SPEED = 0.0015;
 // ============================================================================
 
 const app = document.getElementById('app');
 const statusEl = document.getElementById('status');
-const bubbleCanvas = document.getElementById('bubbles');
-const bubbleCtx = bubbleCanvas.getContext('2d');
 const btnBack = document.getElementById('btn-back');
 const btnForward = document.getElementById('btn-forward');
 
@@ -82,17 +92,19 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = RENDER_EXPOSURE;
 app.appendChild(renderer.domElement);
 
-// TrackballControls instead of OrbitControls: OrbitControls clamps its polar
-// angle to [0, pi] (can't rotate past looking straight up/down), which reads
-// as rotation suddenly "getting stuck" if you keep dragging the same way.
-// TrackballControls rotates via axis-angle/quaternion instead of spherical
-// coordinates, so there's no polar singularity — rotation stays free in any
-// direction indefinitely.
+// TrackballControls is only ever active in debug mode now (free-roam camera
+// for development) — the normal gallery interaction drags the focused
+// *object* instead of orbiting the camera around it (see the pointer
+// handlers below), so it's driven by hand rather than by this instance.
+// Kept as TrackballControls rather than OrbitControls for debug mode since
+// OrbitControls clamps its polar angle to [0, pi] (can't rotate past looking
+// straight up/down); TrackballControls has no such polar singularity.
 const controls = new TrackballControls(camera, renderer.domElement);
+controls.enabled = false;
 controls.noPan = true;
 controls.staticMoving = false;
 controls.dynamicDampingFactor = 0.08; // roughly analogous to OrbitControls' dampingFactor
-controls.rotateSpeed = DRAG_ROTATE_SPEED;
+controls.rotateSpeed = DEBUG_DRAG_ROTATE_SPEED;
 // Real min/max are set in applyZoomLimits(), scaled to the focused object's close distance.
 controls.minDistance = 0.05;
 controls.maxDistance = 50;
@@ -153,85 +165,6 @@ async function loadGoggleMask() {
   }
 }
 loadGoggleMask();
-
-// Click-triggered bubbles, drawn on a plain 2D overlay canvas above the WebGL one.
-let bubbleDpr = 1;
-function resizeBubbleCanvas() {
-  bubbleDpr = window.devicePixelRatio || 1;
-  bubbleCanvas.width = app.clientWidth * bubbleDpr;
-  bubbleCanvas.height = app.clientHeight * bubbleDpr;
-  bubbleCtx.setTransform(bubbleDpr, 0, 0, bubbleDpr, 0, 0);
-}
-resizeBubbleCanvas();
-
-const bubbles = [];
-function spawnBubbles(count = 10) {
-  const width = app.clientWidth;
-  const height = app.clientHeight;
-  for (let i = 0; i < count; i++) {
-    bubbles.push({
-      x: randomRange(width * 0.15, width * 0.85),
-      y: height + randomRange(0, 10),
-      radius: randomRange(9, 22),
-      riseSpeed: randomRange(70, 140),
-      wobbleAmp: randomRange(6, 18),
-      wobbleFreq: randomRange(1.5, 3),
-      wobblePhase: randomRange(0, Math.PI * 2),
-      age: 0,
-      maxAge: randomRange(1.8, 3),
-    });
-  }
-}
-
-function updateAndDrawBubbles(dt) {
-  const height = app.clientHeight;
-  bubbleCtx.clearRect(0, 0, app.clientWidth, height);
-  for (let i = bubbles.length - 1; i >= 0; i--) {
-    const b = bubbles[i];
-    b.age += dt;
-    if (b.age >= b.maxAge) {
-      bubbles.splice(i, 1);
-      continue;
-    }
-    b.y -= b.riseSpeed * dt;
-    const drawX = b.x + Math.sin(b.wobblePhase + b.age * b.wobbleFreq) * b.wobbleAmp;
-    const lifeT = b.age / b.maxAge;
-    const fadeIn = Math.min(1, b.age / 0.2);
-    const fadeOut = 1 - Math.max(0, (lifeT - 0.7) / 0.3);
-    const alpha = fadeIn * fadeOut;
-
-    bubbleCtx.save();
-    bubbleCtx.shadowColor = 'rgba(255, 255, 255, 0.9)';
-    bubbleCtx.shadowBlur = 12;
-
-    bubbleCtx.beginPath();
-    bubbleCtx.arc(drawX, b.y, b.radius, 0, Math.PI * 2);
-    bubbleCtx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.55})`;
-    bubbleCtx.fill();
-    bubbleCtx.lineWidth = 2;
-    bubbleCtx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
-    bubbleCtx.stroke();
-
-    bubbleCtx.beginPath();
-    bubbleCtx.arc(drawX - b.radius * 0.35, b.y - b.radius * 0.35, b.radius * 0.3, 0, Math.PI * 2);
-    bubbleCtx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
-    bubbleCtx.fill();
-    bubbleCtx.restore();
-  }
-}
-
-// A plain click (no drag) spawns bubbles; a rotate-drag should not.
-let pointerDownPos = null;
-renderer.domElement.addEventListener('pointerdown', (e) => {
-  pointerDownPos = { x: e.clientX, y: e.clientY, t: performance.now() };
-});
-renderer.domElement.addEventListener('pointerup', (e) => {
-  if (!pointerDownPos) return;
-  const dist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
-  const duration = performance.now() - pointerDownPos.t;
-  pointerDownPos = null;
-  if (dist < 12 && duration < 600) spawnBubbles();
-});
 
 const clock = new THREE.Clock();
 let elapsedTime = 0;
@@ -500,31 +433,115 @@ function buildWall(objects) {
   });
 }
 
-controls.addEventListener('start', () => {
+// Don't let the manual pan tween and user-driven dragging fight each other —
+// finish the tween instantly and hand off to whichever drag is starting.
+function finishPanTweenNow() {
+  if (!panTween) return;
+  camera.position.copy(panTween.toPos);
+  controls.target.copy(panTween.toTarget);
+  camera.lookAt(controls.target);
+  currentZoomDistance = camera.position.distanceTo(controls.target);
+  panTween = null;
+}
+
+function onInteractionDragStart() {
   dragging = true;
-  // Don't let the manual pan tween and user-driven orbiting fight each
-  // other — finish the tween instantly and hand off to TrackballControls.
-  if (panTween) {
-    camera.position.copy(panTween.toPos);
-    controls.target.copy(panTween.toTarget);
-    camera.lookAt(controls.target);
-    currentZoomDistance = camera.position.distanceTo(controls.target);
-    panTween = null;
-  }
+  finishPanTweenNow();
   bobTarget = dipAmount;
   currentStiffness = SPRING_STIFFNESS_RISE;
   currentDamping = SPRING_DAMPING_RISE;
-});
-controls.addEventListener('end', () => {
+}
+
+function onInteractionDragEnd() {
   dragging = false;
   bobTarget = 0;
   currentStiffness = SPRING_STIFFNESS_FALL;
   currentDamping = SPRING_DAMPING_FALL;
+}
+
+// TrackballControls' own drag (debug mode's free camera) still fires these.
+controls.addEventListener('start', onInteractionDragStart);
+controls.addEventListener('end', onInteractionDragEnd);
+
+// --- Drag-to-rotate-the-object (gallery mode only; debug mode instead free-
+// roams the camera via TrackballControls, gated by controls.enabled) -------
+const ROTATE_YAW_AXIS = new THREE.Vector3(0, 1, 0);
+const ROTATE_PITCH_AXIS = new THREE.Vector3(1, 0, 0);
+const _yawQuat = new THREE.Quaternion();
+const _pitchQuat = new THREE.Quaternion();
+let rotatePointerId = null;
+let lastPointerX = 0;
+let lastPointerY = 0;
+// "Radians to apply this frame" — driven live by pointermove while dragging,
+// then left to decay each frame (OBJECT_ROTATE_INERTIA_DAMPING) once
+// released, so a flick keeps coasting briefly instead of stopping dead.
+let objectRotVelYaw = 0;
+let objectRotVelPitch = 0;
+
+// World-space yaw/pitch turn of the focused object — world-space (not
+// object-local) so the object always responds the same way to a given drag
+// direction, regardless of how it's currently oriented.
+function applyObjectRotation(yawDelta, pitchDelta) {
+  if (currentObjectIndex < 0) return;
+  const group = wallObjects[currentObjectIndex].group;
+  _yawQuat.setFromAxisAngle(ROTATE_YAW_AXIS, yawDelta);
+  _pitchQuat.setFromAxisAngle(ROTATE_PITCH_AXIS, pitchDelta);
+  group.quaternion.premultiply(_yawQuat).premultiply(_pitchQuat);
+}
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (debugMode || currentObjectIndex < 0 || rotatePointerId !== null) return;
+  rotatePointerId = e.pointerId;
+  lastPointerX = e.clientX;
+  lastPointerY = e.clientY;
+  objectRotVelYaw = 0;
+  objectRotVelPitch = 0;
+  renderer.domElement.setPointerCapture(e.pointerId);
+  onInteractionDragStart();
 });
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (e.pointerId !== rotatePointerId) return;
+  const dx = e.clientX - lastPointerX;
+  const dy = e.clientY - lastPointerY;
+  lastPointerX = e.clientX;
+  lastPointerY = e.clientY;
+  const yawDelta = dx * OBJECT_ROTATE_SPEED;
+  const pitchDelta = dy * OBJECT_ROTATE_SPEED;
+  applyObjectRotation(yawDelta, pitchDelta);
+  // Smoothed rather than the raw per-event delta, so inertia reflects the
+  // recent drag rate instead of whatever the last (possibly tiny) move was.
+  objectRotVelYaw = THREE.MathUtils.lerp(objectRotVelYaw, yawDelta, 0.5);
+  objectRotVelPitch = THREE.MathUtils.lerp(objectRotVelPitch, pitchDelta, 0.5);
+});
+function endObjectRotateDrag(e) {
+  if (e.pointerId !== rotatePointerId) return;
+  rotatePointerId = null;
+  onInteractionDragEnd();
+}
+renderer.domElement.addEventListener('pointerup', endObjectRotateDrag);
+renderer.domElement.addEventListener('pointercancel', endObjectRotateDrag);
+
+// Wheel dollies the camera toward/away from the focused object along its
+// fixed viewing direction, clamped to the zoom limits from applyZoomLimits().
+renderer.domElement.addEventListener(
+  'wheel',
+  (e) => {
+    if (debugMode || currentObjectIndex < 0 || panTween) return;
+    e.preventDefault();
+    const view = wallObjects[currentObjectIndex];
+    const factor = Math.exp(e.deltaY * WHEEL_ZOOM_SPEED);
+    currentZoomDistance = THREE.MathUtils.clamp(currentZoomDistance * factor, controls.minDistance, controls.maxDistance);
+    camera.position.copy(controls.target).addScaledVector(view.dir, currentZoomDistance);
+    camera.lookAt(controls.target);
+  },
+  { passive: false }
+);
 
 function setDebugMode(on) {
   debugMode = on;
   panTween = null;
+  rotatePointerId = null;
+  controls.enabled = debugMode;
   if (debugMode) {
     // Same generic bounds the controls start with before any object is shown.
     controls.minDistance = 0.05;
@@ -600,7 +617,6 @@ window.addEventListener('resize', () => {
   camera.aspect = app.clientWidth / app.clientHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(app.clientWidth, app.clientHeight);
-  resizeBubbleCanvas();
   // Unlike OrbitControls, TrackballControls caches the canvas's screen-space
   // bounds (for mapping pointer position to rotation) and needs this called
   // explicitly whenever those bounds change.
@@ -618,8 +634,19 @@ renderer.setAnimationLoop(() => {
 
   if (panTween) {
     updatePanTween();
-  } else {
+  } else if (debugMode) {
     controls.update();
+  }
+
+  // Once the drag that was driving objectRotVel* live has ended, keep
+  // spinning the object at that rate for a bit, decaying it toward 0 each
+  // frame — the coast-to-a-stop a flick leaves behind.
+  if (rotatePointerId === null && (objectRotVelYaw !== 0 || objectRotVelPitch !== 0)) {
+    applyObjectRotation(objectRotVelYaw, objectRotVelPitch);
+    objectRotVelYaw *= OBJECT_ROTATE_INERTIA_DAMPING;
+    objectRotVelPitch *= OBJECT_ROTATE_INERTIA_DAMPING;
+    if (Math.abs(objectRotVelYaw) < OBJECT_ROTATE_INERTIA_STOP) objectRotVelYaw = 0;
+    if (Math.abs(objectRotVelPitch) < OBJECT_ROTATE_INERTIA_STOP) objectRotVelPitch = 0;
   }
 
   // Spring the Y offset toward bobTarget: rises on drag start, eases back down
@@ -658,6 +685,4 @@ renderer.setAnimationLoop(() => {
   camera.rotateY(-wiggleYaw);
   camera.position.x -= wiggleX;
   camera.position.y -= bobOffset + wiggleY;
-
-  updateAndDrawBubbles(dt);
 });
