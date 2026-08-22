@@ -5,6 +5,7 @@ public/models/
 public/layout/
 public/icon/
 public/sound/
+public/data/
 
 # Undecimated source meshes (100s of MB each) — see MAX_MESH_BYTES in
 # scripts/generate-assets.mjs, which already skips these at build time.

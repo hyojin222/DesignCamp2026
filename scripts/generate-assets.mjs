@@ -13,6 +13,8 @@ const ICON_SOURCE_DIR = path.join(SOURCE_DIR, 'icon');
 const ICON_OUTPUT_DIR = path.join(ROOT, 'public', 'icon');
 const SOUND_SOURCE_DIR = path.join(SOURCE_DIR, 'sound');
 const SOUND_OUTPUT_DIR = path.join(ROOT, 'public', 'sound');
+const DATA_SOURCE_DIR = path.join(SOURCE_DIR, 'data');
+const DATA_OUTPUT_DIR = path.join(ROOT, 'public', 'data');
 
 const MESH_EXTS = new Set(['.obj', '.glb', '.gltf']);
 const IMAGE_EXTS = new Set(['.tif', '.tiff', '.png', '.jpg', '.jpeg']);
@@ -140,6 +142,7 @@ export async function generateAssets() {
   await copyFilesDir(LAYOUT_SOURCE_DIR, LAYOUT_OUTPUT_DIR, new Set(['.svg']));
   await copyFilesDir(ICON_SOURCE_DIR, ICON_OUTPUT_DIR, new Set(['.svg']));
   await copyFilesDir(SOUND_SOURCE_DIR, SOUND_OUTPUT_DIR, new Set(['.mp3', '.ogg', '.wav', '.m4a']));
+  await copyFilesDir(DATA_SOURCE_DIR, DATA_OUTPUT_DIR, new Set(['.json']));
 
   let allFiles = [];
   try {
