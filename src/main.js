@@ -7,17 +7,27 @@ import './hud.js';
 // ============================================================================
 // Look & feel tuning — kept together here since these get tweaked a lot.
 // ============================================================================
-const YELLOW_FILTER_FRACTION = 1 / 3; // portion of all objects given the treatment
-const YELLOW_MODE = 'filter'; // 'filter' = tint over the texture, 'solid' = flat color, no texture
+const YELLOW_MODE = 'solid'; // 'solid' = flat color, no texture (stage 1's "노란 단색"); 'filter' = tint over the texture
 const YELLOW_FILTER_COLOR = 0xFFEA47; // tint color used in 'filter' mode
 const YELLOW_FILTER_STRENGTH = 1.0; // 0 = no visible tint, 1 = fully replaced by YELLOW_FILTER_COLOR
 const YELLOW_SOLID_COLOR = 0xFFEA47; // flat color used in 'solid' mode
-const RENDER_EXPOSURE = 0.7; // renderer.toneMappingExposure — lower = darker overall, less washed-out/ivory highlights
-// Default-mode focus distance, as a multiple of the object's bounding radius.
-const DEFAULT_ZOOM_MULTIPLIER = 0.5;
-// In default mode, how far the user can zoom in/out from that default
-// distance, as a +/-fraction of it (see computeZoomLimits).
-const ZOOM_RANGE_FRACTION = 0.2;
+const RENDER_EXPOSURE = 1.0; // renderer.toneMappingExposure — lower = darker overall, less washed-out/ivory highlights
+// Ambient light lands equally on every face regardless of orientation, so
+// raising it lifts the shadow/unlit side of objects toward a flatter, more
+// matte look without touching the side already lit by the key/fill lights.
+const AMBIENT_LIGHT_INTENSITY = 2.4;
+
+// Stage-cycle tuning: each shown object goes through 3 stages of
+// STAGE_DURATION seconds each — (1) yellow + close-up, (2) yellow + whole
+// object, (3) original texture + whole object — then hands off to a new
+// random object (never repeating the one just shown).
+const STAGE_DURATION = 3; // seconds per stage
+const CLOSE_ZOOM_MULTIPLIER = 0.5; // stage-1 close-up distance, x the object's bounding radius
+const WHOLE_OBJECT_ZOOM_MARGIN = 1.25; // stage-2/3 whole-object distance, x the FOV-fit distance
+// How far the user can zoom in/out from whichever stage's target distance,
+// as a +/-fraction of it.
+const ZOOM_RANGE_FRACTION = 0.1;
+const ZOOM_STAGE_TRANSITION_DURATION = 0.8; // seconds, eased zoom-out leaving stage 1
 // ============================================================================
 
 const app = document.getElementById('app');
@@ -26,7 +36,6 @@ const bubbleCanvas = document.getElementById('bubbles');
 const bubbleCtx = bubbleCanvas.getContext('2d');
 
 const scene = new THREE.Scene();
-// scene.background = new THREE.Color(0x090909);
 scene.background = new THREE.Color(0xFFEA47);
 
 const camera = new THREE.PerspectiveCamera(
@@ -52,11 +61,12 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.rotateSpeed = 0.8;
-// Real min/max are set per-focus in applyFocusState(), scaled to that object's zoom.
+controls.enablePan = false;
+// Real min/max are set per-stage in applyZoomLimits(), scaled to that stage's target distance.
 controls.minDistance = 0.05;
 controls.maxDistance = 50;
 
-scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+scene.add(new THREE.AmbientLight(0xffffff, AMBIENT_LIGHT_INTENSITY));
 const keyLight = new THREE.DirectionalLight(0xffffff, 2);
 keyLight.position.set(3, 5, 4);
 scene.add(keyLight);
@@ -172,58 +182,6 @@ const WIGGLE_ROT_AMP = 0.022; // radians
 const WIGGLE_SPEED = 1.7; // slightly faster than the base sine frequencies below
 let currentZoomDistance = 1;
 
-// Auto-tour: focus one object at a time, filling the frame, and hand off to a
-// random different one every AUTO_SWITCH_MS via an eased camera transition.
-// Right after the user drags, the next hand-off comes sooner (POST_DRAG_SWITCH_MS).
-const AUTO_SWITCH_MS = 15000;
-const POST_DRAG_SWITCH_MS = 5000;
-const TRANSITION_DURATION = 3.6;
-let placedObjects = [];
-let focusedObject = null;
-let transition = null;
-let autoSwitchTimer = null;
-
-// Debug mode (toggled with the '0' key): free camera, no auto-switching, no
-// zoom limits. Default mode (the normal auto-tour) is what the app starts in.
-let debugMode = false;
-
-controls.addEventListener('start', () => {
-  transition = null;
-  clearTimeout(autoSwitchTimer);
-  bobTarget = dipAmount;
-  currentStiffness = SPRING_STIFFNESS_RISE;
-  currentDamping = SPRING_DAMPING_RISE;
-});
-controls.addEventListener('end', () => {
-  bobTarget = 0;
-  currentStiffness = SPRING_STIFFNESS_FALL;
-  currentDamping = SPRING_DAMPING_FALL;
-  if (!debugMode) scheduleAutoSwitch(POST_DRAG_SWITCH_MS);
-});
-
-function setDebugMode(on) {
-  debugMode = on;
-  clearTimeout(autoSwitchTimer);
-  if (debugMode) {
-    transition = null;
-    // Same generic bounds the controls start with before any focus is applied.
-    controls.minDistance = 0.05;
-    controls.maxDistance = 50;
-  } else {
-    if (focusedObject) {
-      const view = computeFocusView(focusedObject);
-      const limits = computeZoomLimits(view);
-      controls.minDistance = limits.min;
-      controls.maxDistance = limits.max;
-    }
-    scheduleAutoSwitch();
-  }
-}
-
-window.addEventListener('keydown', (e) => {
-  if (e.key === '0') setDebugMode(!debugMode);
-});
-
 function buildMaterial(textures) {
   const material = new THREE.MeshStandardMaterial({ color: 0xd8cdbe, roughness: 0.7, metalness: 0 });
   if (!textures) return material;
@@ -250,32 +208,19 @@ function randomRange(min, max) {
   return min + Math.random() * (max - min);
 }
 
-// 30 objects total, repeating the available types as needed, scattered at
-// random non-overlapping positions (including the interior, not just the
-// shell) throughout a cube, each with a fully random orientation.
-const CUBE_HALF = 5.5;
-const TARGET_SIZE = 2.2;
-const TOTAL_COUNT = 30;
-const MIN_SEPARATION = TARGET_SIZE * 1.05;
-// How far outside the cluster the camera's flight path bulges out to, so it
-// swings around other objects instead of cutting straight through them.
-const ORBIT_RADIUS = CUBE_HALF * Math.sqrt(3) * 1.4;
-
-function randomPointInCube(half) {
-  return new THREE.Vector3(randomRange(-half, half), randomRange(-half, half), randomRange(-half, half));
-}
-
 function randomAxis() {
   const axis = new THREE.Vector3(randomRange(-1, 1), randomRange(-1, 1), randomRange(-1, 1));
   return axis.lengthSq() < 1e-6 ? axis.set(0, 1, 0) : axis.normalize();
 }
 
-// Normalize the object to the target size, then wrap it in a group placed at
-// a random, non-overlapping point inside the cube with a random orientation.
-// The wrapping is what makes rotation not shift the object's visual center:
-// the mesh is centered on the group's own origin, so spinning the group in
-// place never moves that origin away from the point it was given.
-function placeInCube(object, placedPositions) {
+const TARGET_SIZE = 2.2;
+
+// Normalize the object to the target size and center its pivot, then wrap it
+// in a group at the world origin with a random orientation and its own slow
+// spin. The wrapping is what makes rotation not shift the object's visual
+// center: the mesh is centered on the group's own origin, so spinning the
+// group in place never moves that origin.
+function prepareObject(object) {
   const box = new THREE.Box3().setFromObject(object);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
@@ -287,26 +232,13 @@ function placeInCube(object, placedPositions) {
 
   const group = new THREE.Group();
   group.add(object);
-
-  let point = randomPointInCube(CUBE_HALF);
-  for (let attempt = 0; attempt < 300; attempt++) {
-    const candidate = randomPointInCube(CUBE_HALF);
-    if (placedPositions.every((p) => p.distanceTo(candidate) >= MIN_SEPARATION)) {
-      point = candidate;
-      break;
-    }
-  }
-  placedPositions.push(point);
-  group.position.copy(point);
-
   group.rotation.set(randomRange(0, Math.PI * 2), randomRange(0, Math.PI * 2), randomRange(0, Math.PI * 2));
 
-  // Keeps spinning slowly around its own random axis for as long as it exists.
+  // Keeps spinning slowly around its own random axis for as long as it's shown.
   group.userData.spinAxis = randomAxis();
   group.userData.spinSpeed = randomRange(0.015, 0.05);
 
   prepareFilterMaterials(group);
-
   return group;
 }
 
@@ -400,214 +332,190 @@ function setYellowFilter(group, enabled) {
   });
 }
 
-// Re-rolls which ~1/3 of the objects are wearing the yellow filter.
-function shuffleYellowFilters() {
-  const count = Math.round(placedObjects.length * YELLOW_FILTER_FRACTION);
-  const shuffled = [...placedObjects].sort(() => Math.random() - 0.5);
-  for (const obj of placedObjects) setYellowFilter(obj, false);
-  for (let i = 0; i < count; i++) setYellowFilter(shuffled[i], true);
-}
-
-function pickRandomObject(exclude) {
-  if (placedObjects.length === 0) return null;
-  if (placedObjects.length === 1) return placedObjects[0];
-  let candidate;
-  do {
-    candidate = placedObjects[Math.floor(Math.random() * placedObjects.length)];
-  } while (candidate === exclude);
-  return candidate;
-}
-
-// Where the camera should sit to fill the frame with one object, from a random angle.
-function computeFocusView(object) {
+// Everything needed to run one object's 3-stage cycle: a fixed center/viewing
+// direction (only the distance along it changes between stages) plus the two
+// distances stage 1 and stages 2/3 sit at.
+function computeCycleView(object) {
   const box = new THREE.Box3().setFromObject(object);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
-
+  const boundingRadius = size.length() / 2;
   const fitDistance = maxDim / (2 * Math.tan((Math.PI * camera.fov) / 360));
 
-  // The object's real bounding-sphere radius (half the box's diagonal, so it
-  // fully contains every corner — half of maxDim alone would still let the
-  // camera clip through corners on non-cubic shapes), so the camera is
-  // mathematically guaranteed to sit outside the geometry instead of just
-  // being placed at some fraction of fitDistance that could land inside it.
-  // The default framing distance IS the closest safe distance (the max
-  // zoom-in bound below is derived from this same value), so focusing on an
-  // object starts already fully zoomed in on it.
-  const boundingRadius = size.length() / 2;
-  const zoomDistance = boundingRadius * DEFAULT_ZOOM_MULTIPLIER;
+  const closeDistance = boundingRadius * CLOSE_ZOOM_MULTIPLIER;
+  const wholeDistance = fitDistance * WHOLE_OBJECT_ZOOM_MARGIN;
 
   const theta = randomRange(0, Math.PI * 2);
   const phi = randomRange(Math.PI * 0.3, Math.PI * 0.7);
-
-  const position = new THREE.Vector3(
-    center.x + zoomDistance * Math.sin(phi) * Math.cos(theta),
-    center.y + zoomDistance * Math.cos(phi),
-    center.z + zoomDistance * Math.sin(phi) * Math.sin(theta)
+  const dir = new THREE.Vector3(
+    Math.sin(phi) * Math.cos(theta),
+    Math.cos(phi),
+    Math.sin(phi) * Math.sin(theta)
   );
 
-  return { position, target: center, zoomDistance, fitDistance, boundingRadius };
+  return { center, dir, closeDistance, wholeDistance, fitDistance, boundingRadius };
 }
 
-// How far in/out the user can zoom in default mode: +/-ZOOM_RANGE_FRACTION
-// around the current default framing distance, so pinch/scroll zoom always
-// has real headroom in both directions from wherever DEFAULT_ZOOM_MULTIPLIER
-// puts the default. No anti-clip floor here by design — DEFAULT_ZOOM_MULTIPLIER
-// can intentionally sit closer than the object's bounding radius for a tight
-// close-up default, and the +/-20% range follows it there.
-function computeZoomLimits(view) {
-  return {
-    min: view.zoomDistance * (1 - ZOOM_RANGE_FRACTION),
-    max: view.zoomDistance * (1 + ZOOM_RANGE_FRACTION),
-  };
+// --- Single-object stage cycle state ---------------------------------------
+let templates = [];
+let currentGroup = null;
+let currentTemplateIndex = -1;
+let cycleView = null;
+let stageIndex = 0; // 0: yellow + close-up, 1: yellow + whole object, 2: original texture + whole object
+let activeElapsed = 0; // seconds, excludes time spent dragging or in debug mode
+let stageStartActive = 0; // activeElapsed value when the current object's cycle began
+let dragging = false;
+let zoomTween = null; // { dir, fromDist, toDist, start } — eased distance-only tween leaving stage 1
+
+// Debug mode (toggled with the '0' key): free camera, stage cycle paused, no
+// zoom limits. Default mode (the normal stage cycle) is what the app starts in.
+let debugMode = false;
+
+function stageTargetDistance() {
+  return stageIndex === 0 ? cycleView.closeDistance : cycleView.wholeDistance;
 }
 
-// Apply a focus view's distances/limits/spring state once the camera is actually there.
-function applyFocusState(view) {
-  camera.near = view.zoomDistance / 100;
-  camera.far = view.fitDistance * 100;
-  camera.updateProjectionMatrix();
-
-  // How far in/out the user can zoom from the focused framing — see computeZoomLimits.
-  if (!debugMode) {
-    const limits = computeZoomLimits(view);
-    controls.minDistance = limits.min;
-    controls.maxDistance = limits.max;
-  }
-
-  // Leave bobOffset/bobVelocity as they are (don't snap to 0) — bobTarget=0
-  // lets the existing spring ease any residual dip out smoothly instead of
-  // cutting to it, which is what caused the little jerk on arrival.
-  dipAmount = view.zoomDistance * 0.04;
-  bobTarget = 0;
-  currentStiffness = SPRING_STIFFNESS_RISE;
-  currentDamping = SPRING_DAMPING_RISE;
-
-  // So the ambient wiggle's amplitude stays proportional at any zoom level.
-  currentZoomDistance = view.zoomDistance;
+// How far the user can zoom in/out from whichever stage's target distance —
+// see ZOOM_RANGE_FRACTION above.
+function applyZoomLimits() {
+  if (debugMode || !cycleView) return;
+  const target = stageTargetDistance();
+  controls.minDistance = target * (1 - ZOOM_RANGE_FRACTION);
+  controls.maxDistance = target * (1 + ZOOM_RANGE_FRACTION);
 }
 
-// Switch focus to one object, filling the frame with it from a random angle.
-// The very first focus (animate=false) just cuts there; every later one eases
-// the camera over from wherever it currently is.
-function focusOnObject(object, animate) {
-  const view = computeFocusView(object);
-  focusedObject = object;
-  shuffleYellowFilters();
-
-  if (!animate) {
-    camera.position.copy(view.position);
-    controls.target.copy(view.target);
-    applyFocusState(view);
-    controls.update();
-    return;
-  }
-
-  const fromPos = camera.position.clone();
-
-  // Curve the flight path outward (a quadratic Bezier control point pushed
-  // away from the cluster center) instead of a straight line, so the camera
-  // swings around the other objects on its way instead of clipping through
-  // them. Degenerate case (from/to roughly on top of each other): nudge the
-  // control point off to the side so the curve still has some bulge.
-  const mid = fromPos.clone().lerp(view.position, 0.5);
-  const outDir = mid.lengthSq() > 1e-6 ? mid.normalize() : new THREE.Vector3(1, 0.4, 0).normalize();
-  const control = outDir.multiplyScalar(ORBIT_RADIUS);
-
-  // The direction the camera is travelling in right as it reaches the
-  // destination (the curve's tangent at t=1) — the back/bounce wobble below
-  // moves straight along this line, it does not re-walk the curve itself.
-  const arrivalDir = view.position.clone().sub(control);
-  if (arrivalDir.lengthSq() < 1e-6) arrivalDir.copy(view.position).sub(fromPos);
-  if (arrivalDir.lengthSq() < 1e-6) arrivalDir.set(0, 1, 0);
-  arrivalDir.normalize();
-
-  transition = {
-    fromPos,
-    fromTarget: controls.target.clone(),
-    fromZoomDistance: currentZoomDistance,
-    control,
-    arrivalDir,
-    // Scaled to how far this particular trip is, so the overshoot is a
-    // proportional "one extra step past the destination" like (0,3)->(1,6)-
-    // >(3,12)->(2,9) rather than a fixed amount unrelated to the distance.
-    travelDistance: fromPos.distanceTo(view.position),
-    toPos: view.position,
-    toTarget: view.target,
-    view,
-    start: elapsedTime,
-  };
+function startZoomTween(toDist) {
+  const dir = camera.position.clone().sub(controls.target);
+  const fromDist = dir.length() || toDist;
+  dir.normalize();
+  zoomTween = { dir, fromDist, toDist, start: elapsedTime };
 }
 
 function easeInOutCubic(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
-// A smooth multi-bounce signal — zero at t=0 and t=1 (a sine "window" so it
-// never disturbs the exact start/end position), riding a higher-frequency
-// sine so it swings past and back more than once. The window is symmetric
-// (mirrored around the midpoint), so the swing arriving at the end reads
-// just as clearly as the one leaving the start, instead of fading out.
-const BOUNCE_FREQ = 5; // integer, and >=5 so at least 2 full swings land right at the arrival end
-function bounceSignal(t) {
-  const window = Math.sin(Math.PI * t);
-  const swing = Math.sin(BOUNCE_FREQ * Math.PI * t);
-  return window * swing;
-}
-
-function quadraticBezier(p0, p1, p2, t, out) {
-  const mt = 1 - t;
-  const a = mt * mt;
-  const b = 2 * mt * t;
-  const c = t * t;
-  return out.set(
-    a * p0.x + b * p1.x + c * p2.x,
-    a * p0.y + b * p1.y + c * p2.y,
-    a * p0.z + b * p1.z + c * p2.z
-  );
-}
-
-const _transitionPos = new THREE.Vector3();
-const BOUNCE_AXIS_LIMIT = 20; // hard cap per-axis, world units
-
-// Advances the active camera transition; called instead of controls.update()
-// while one is in progress so OrbitControls doesn't fight the manual tween.
-function updateTransition() {
-  const t = Math.min(1, (elapsedTime - transition.start) / TRANSITION_DURATION);
-
-  // Travel the curved (orbit-avoiding) path with a plain smooth ease — no
-  // overshoot here, so the path itself is only ever walked forward once.
-  const curveT = easeInOutCubic(t);
-  quadraticBezier(transition.fromPos, transition.control, transition.toPos, curveT, _transitionPos);
-
-  // Layer a straight-line back/bounce wobble on top, along the direction the
-  // camera arrives from — zero at both ends (t=0 and t=1), so it never
-  // changes the start or the exact final position, only the path between.
-  const bounce = bounceSignal(t);
-  const bounceAmp = Math.min(transition.travelDistance * 0.3, BOUNCE_AXIS_LIMIT);
-  _transitionPos.x += THREE.MathUtils.clamp(transition.arrivalDir.x * bounce * bounceAmp, -BOUNCE_AXIS_LIMIT, BOUNCE_AXIS_LIMIT);
-  _transitionPos.y += THREE.MathUtils.clamp(transition.arrivalDir.y * bounce * bounceAmp, -BOUNCE_AXIS_LIMIT, BOUNCE_AXIS_LIMIT);
-  _transitionPos.z += THREE.MathUtils.clamp(transition.arrivalDir.z * bounce * bounceAmp, -BOUNCE_AXIS_LIMIT, BOUNCE_AXIS_LIMIT);
-
-  camera.position.copy(_transitionPos);
-  controls.target.lerpVectors(transition.fromTarget, transition.toTarget, curveT);
+// Advances the active zoom tween; called instead of controls.update() while
+// one is in progress so OrbitControls doesn't fight the manual tween. Only
+// the distance along the fixed viewing direction changes — the object itself
+// never moves, so no curve/bounce is needed here, unlike the old cross-object
+// flights this replaced.
+function updateZoomTween() {
+  const t = Math.min(1, (elapsedTime - zoomTween.start) / ZOOM_STAGE_TRANSITION_DURATION);
+  const dist = THREE.MathUtils.lerp(zoomTween.fromDist, zoomTween.toDist, easeInOutCubic(t));
+  camera.position.copy(controls.target).addScaledVector(zoomTween.dir, dist);
   camera.lookAt(controls.target);
-  // Interpolate too, so the wiggle's amplitude doesn't jump the instant we arrive.
-  currentZoomDistance = THREE.MathUtils.lerp(transition.fromZoomDistance, transition.view.zoomDistance, curveT);
+  currentZoomDistance = dist;
+  if (t >= 1) zoomTween = null;
+}
 
-  if (t >= 1) {
-    applyFocusState(transition.view);
-    transition = null;
+function pickNextTemplateIndex() {
+  if (templates.length <= 1) return 0;
+  let idx;
+  do {
+    idx = Math.floor(Math.random() * templates.length);
+  } while (idx === currentTemplateIndex);
+  return idx;
+}
+
+// Swap in a new random object (never the one just shown) and start its cycle
+// fresh at stage 0 (yellow + close-up), cutting the camera straight there.
+function showNextObject() {
+  if (currentGroup) scene.remove(currentGroup);
+
+  currentTemplateIndex = pickNextTemplateIndex();
+  const instance = templates[currentTemplateIndex].clone(true);
+  currentGroup = prepareObject(instance);
+  scene.add(currentGroup);
+  setYellowFilter(currentGroup, true);
+
+  cycleView = computeCycleView(currentGroup);
+  stageIndex = 0;
+  stageStartActive = activeElapsed;
+  zoomTween = null;
+
+  camera.near = cycleView.closeDistance / 100;
+  camera.far = cycleView.fitDistance * 100;
+  camera.updateProjectionMatrix();
+
+  controls.target.copy(cycleView.center);
+  camera.position.copy(cycleView.center).addScaledVector(cycleView.dir, cycleView.closeDistance);
+  camera.lookAt(controls.target);
+  currentZoomDistance = cycleView.closeDistance;
+
+  // Leave bobOffset/bobVelocity as they are (don't snap to 0) — bobTarget=0
+  // lets the existing spring ease any residual dip out smoothly.
+  dipAmount = cycleView.closeDistance * 0.04;
+  bobTarget = 0;
+  currentStiffness = SPRING_STIFFNESS_RISE;
+  currentDamping = SPRING_DAMPING_RISE;
+
+  applyZoomLimits();
+}
+
+controls.addEventListener('start', () => {
+  dragging = true;
+  // Don't let the manual zoom tween and user-driven orbiting fight each
+  // other — finish the tween instantly and hand off to OrbitControls.
+  if (zoomTween) {
+    camera.position.copy(controls.target).addScaledVector(zoomTween.dir, zoomTween.toDist);
+    camera.lookAt(controls.target);
+    currentZoomDistance = zoomTween.toDist;
+    zoomTween = null;
+  }
+  bobTarget = dipAmount;
+  currentStiffness = SPRING_STIFFNESS_RISE;
+  currentDamping = SPRING_DAMPING_RISE;
+});
+controls.addEventListener('end', () => {
+  dragging = false;
+  bobTarget = 0;
+  currentStiffness = SPRING_STIFFNESS_FALL;
+  currentDamping = SPRING_DAMPING_FALL;
+});
+
+function setDebugMode(on) {
+  debugMode = on;
+  zoomTween = null;
+  if (debugMode) {
+    // Same generic bounds the controls start with before any object is shown.
+    controls.minDistance = 0.05;
+    controls.maxDistance = 50;
+  } else {
+    applyZoomLimits();
   }
 }
 
-function scheduleAutoSwitch(delay = AUTO_SWITCH_MS) {
-  clearTimeout(autoSwitchTimer);
-  autoSwitchTimer = setTimeout(() => {
-    focusOnObject(pickRandomObject(focusedObject), true);
-    scheduleAutoSwitch();
-  }, delay);
+window.addEventListener('keydown', (e) => {
+  if (e.key === '0') setDebugMode(!debugMode);
+});
+
+// Steps the stage timer (paused while dragging or in debug mode) and either
+// runs the zoom tween or hands control to OrbitControls for the frame.
+function updateCycle(dt) {
+  if (!dragging && !debugMode) activeElapsed += dt;
+
+  if (!debugMode && cycleView) {
+    const t = activeElapsed - stageStartActive;
+    if (t >= STAGE_DURATION * 3) {
+      showNextObject();
+    } else {
+      const newStage = Math.min(2, Math.floor(t / STAGE_DURATION));
+      if (newStage !== stageIndex) {
+        stageIndex = newStage;
+        if (stageIndex === 1) startZoomTween(cycleView.wholeDistance);
+        if (stageIndex === 2) setYellowFilter(currentGroup, false);
+        applyZoomLimits();
+      }
+    }
+  }
+
+  if (zoomTween) {
+    updateZoomTween();
+  } else {
+    controls.update();
+  }
 }
 
 function loadModel(model) {
@@ -652,18 +560,13 @@ async function init() {
     )
   );
 
-  // Each unique model is fetched once; repeat them round-robin to fill out 30.
-  const templates = objects.filter(Boolean);
-  const placedPositions = [];
-  for (let i = 0; i < TOTAL_COUNT && templates.length; i++) {
-    const instance = templates[i % templates.length].clone(true);
-    const group = placeInCube(instance, placedPositions);
-    scene.add(group);
-    placedObjects.push(group);
+  templates = objects.filter(Boolean);
+  if (!templates.length) {
+    statusEl.textContent = '모델을 불러오지 못했습니다.';
+    return;
   }
 
-  focusOnObject(pickRandomObject(null), false);
-  scheduleAutoSwitch();
+  showNextObject();
   statusEl.style.display = 'none';
 }
 
@@ -680,11 +583,7 @@ renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
   elapsedTime += dt;
 
-  if (transition) {
-    updateTransition();
-  } else {
-    controls.update();
-  }
+  updateCycle(dt);
 
   // Spring the Y offset toward bobTarget: rises on drag start, eases back down
   // (with a little overshoot) on release.
@@ -703,9 +602,9 @@ renderer.setAnimationLoop(() => {
   const wiggleYaw = WIGGLE_ROT_AMP * Math.sin(wt * 0.09 + 0.8);
   const wiggleTilt = WIGGLE_ROT_AMP * 0.7 * Math.sin(wt * 0.12 + 3.4);
 
-  // Every object keeps spinning slowly around its own fixed random axis.
-  for (const object of placedObjects) {
-    object.rotateOnAxis(object.userData.spinAxis, object.userData.spinSpeed * dt);
+  // The object keeps spinning slowly around its own fixed random axis.
+  if (currentGroup) {
+    currentGroup.rotateOnAxis(currentGroup.userData.spinAxis, currentGroup.userData.spinSpeed * dt);
   }
 
   // Nudge for this render only, then undo it — otherwise OrbitControls reads the
