@@ -53,7 +53,7 @@
         width: 100%;
         height: 100%;
       }
-      #hud-2-vignette {
+      #hud-3-vignette {
         position: absolute;
         inset: 0;
         background: radial-gradient(
@@ -80,26 +80,44 @@
       <canvas id="bubbles"></canvas>
       <div id="status">불러오는 중...</div>
 
-      <div id="hud-1" class="hud">
+      <!-- Default: circular porthole + hex ring only, no text/reticle clutter. -->
+      <div id="hud-1" class="hud active">
         <svg viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
           <defs>
             <mask id="hud1-porthole-mask">
               <rect width="1920" height="1080" fill="white" />
               <circle cx="968" cy="555" r="670" fill="black" />
             </mask>
-            <radialGradient id="hud1-reticle-glow" cx="50%" cy="50%" r="50%">
+          </defs>
+
+          <rect width="1920" height="1080" fill="black" mask="url(#hud1-porthole-mask)" />
+          <circle cx="968" cy="555" r="670" fill="none" stroke="#444444" stroke-width="1.5" />
+
+          <g id="hud1-hex-ring" fill="#616161"></g>
+        </svg>
+      </div>
+
+      <!-- Same circular HUD, with the corner readouts and reticle visual. -->
+      <div id="hud-2" class="hud">
+        <svg viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+          <defs>
+            <mask id="hud2-porthole-mask">
+              <rect width="1920" height="1080" fill="white" />
+              <circle cx="968" cy="555" r="670" fill="black" />
+            </mask>
+            <radialGradient id="hud2-reticle-glow" cx="50%" cy="50%" r="50%">
               <stop offset="0%" stop-color="white" stop-opacity="0.9" />
               <stop offset="100%" stop-color="white" stop-opacity="0" />
             </radialGradient>
           </defs>
 
-          <rect width="1920" height="1080" fill="black" mask="url(#hud1-porthole-mask)" />
-          <circle cx="968" cy="555" r="670" fill="none" stroke="#aaaaaa" stroke-width="1.5" />
+          <rect width="1920" height="1080" fill="black" mask="url(#hud2-porthole-mask)" />
+          <circle cx="968" cy="555" r="670" fill="none" stroke="#444444" stroke-width="1.5" />
 
-          <g id="hud1-hex-ring" fill="#616161"></g>
+          <g id="hud2-hex-ring" fill="#616161"></g>
 
           <g stroke="#767676" stroke-width="1.5" fill="none">
-            <circle cx="159" cy="153" r="86" fill="url(#hud1-reticle-glow)" stroke="#767676" />
+            <circle cx="159" cy="153" r="86" fill="url(#hud2-reticle-glow)" stroke="#767676" />
             <line x1="159" y1="62" x2="159" y2="250" stroke="black" stroke-width="9" stroke-linecap="square" />
             <line x1="69" y1="153" x2="251" y2="153" stroke="black" stroke-width="9" stroke-linecap="square" />
             <line x1="53" y1="153" x2="63" y2="153" />
@@ -125,8 +143,8 @@
         </svg>
       </div>
 
-      <div id="hud-2" class="hud">
-        <div id="hud-2-vignette"></div>
+      <div id="hud-3" class="hud">
+        <div id="hud-3-vignette"></div>
         <svg viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
           <g stroke="#767676" stroke-width="1.5" fill="none" stroke-linecap="square">
             <path d="M0 40 Q960 210 1920 40" />
@@ -181,7 +199,7 @@
         </svg>
       </div>
 
-      <div id="hud-hint">1 / 2 — UI 시안 전환</div>
+      <div id="hud-hint">1 / 2 / 3 — UI 시안 전환</div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>

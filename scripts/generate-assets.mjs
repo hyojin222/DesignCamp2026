@@ -81,7 +81,15 @@ function slugify(text) {
 }
 
 async function convertTexture(srcPath, destPathNoExt, role) {
-  const image = sharp(srcPath).resize(2048, 2048, { fit: 'inside', withoutEnlargement: true });
+  // Source textures can be unusually large (raw scans, uncompressed TIFFs);
+  // `unlimited` skips sharp/libvips's memory-exhaustion guard that otherwise
+  // refuses to even open them. Safe here since this only runs once at build
+  // time, not per-frame in the browser, and resize() still streams rather
+  // than materializing the full source in memory.
+  const image = sharp(srcPath, { unlimited: true, limitInputPixels: false }).resize(2048, 2048, {
+    fit: 'inside',
+    withoutEnlargement: true,
+  });
   if (role === 'normalMap') {
     const dest = `${destPathNoExt}.png`;
     await image.png().toFile(dest);

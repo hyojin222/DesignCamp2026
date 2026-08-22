@@ -1,17 +1,18 @@
-// Press 1 or 2 to preview a UI overlay design on top of the 3D scene; press
-// the same key again to hide it. Only one is shown at a time.
+// UI 1 (minimal circular HUD) is shown by default. Press 1/2/3 to switch to
+// another design preview; there's always exactly one showing.
 const huds = {
   1: document.getElementById('hud-1'),
   2: document.getElementById('hud-2'),
+  3: document.getElementById('hud-3'),
 };
 
-function buildHexRing() {
-  const ring = document.getElementById('hud1-hex-ring');
+function buildHexRing(ringId) {
+  const ring = document.getElementById(ringId);
   if (!ring) return;
   const cx = 968;
   const cy = 555;
   const radius = 705;
-  const hexRadius = 15;
+  const hexRadius = 9;
   const count = 26;
 
   for (let i = 0; i < count; i++) {
@@ -31,14 +32,13 @@ function buildHexRing() {
   }
 }
 
-buildHexRing();
+buildHexRing('hud1-hex-ring');
+buildHexRing('hud2-hex-ring');
 
 window.addEventListener('keydown', (e) => {
-  if (e.key !== '1' && e.key !== '2') return;
   const target = huds[e.key];
   if (!target) return;
 
-  const wasActive = target.classList.contains('active');
   for (const hud of Object.values(huds)) hud.classList.remove('active');
-  if (!wasActive) target.classList.add('active');
+  target.classList.add('active');
 });
