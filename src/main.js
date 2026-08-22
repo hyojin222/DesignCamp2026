@@ -7,10 +7,14 @@ import './hud.js';
 // ============================================================================
 // Look & feel tuning — kept together here since these get tweaked a lot.
 // ============================================================================
-const YELLOW_MODE = 'solid'; // 'solid' = flat color, no texture (stage 1's "노란 단색"); 'filter' = tint over the texture
-const YELLOW_FILTER_COLOR = 0xFFEA47; // tint color used in 'filter' mode
-const YELLOW_FILTER_STRENGTH = 1.0; // 0 = no visible tint, 1 = fully replaced by YELLOW_FILTER_COLOR
-const YELLOW_SOLID_COLOR = 0xFFEA47; // flat color used in 'solid' mode
+const YELLOW_COLOR = 0xFFE200; // the flat "노란 단색" used for the yellow stage
+// Plain PBR shading would let the shaded/dark side of the object drop toward
+// black, reading as a dull, desaturated yellow instead of YELLOW_COLOR.
+// Emissive adds a light-independent floor of the same color so the dark side
+// stays recognizably yellow (and the lit side barely changes), keeping the
+// whole surface close to YELLOW_COLOR on screen. 0 = normal PBR shading
+// (dark side can go near-black), 1 = fully flat, no shading at all.
+const YELLOW_EMISSIVE_INTENSITY = 0.3;
 const RENDER_EXPOSURE = 1.0; // renderer.toneMappingExposure — lower = darker overall, less washed-out/ivory highlights
 // Ambient light lands equally on every face regardless of orientation, so
 // raising it lifts the shadow/unlit side of objects toward a flatter, more
@@ -244,8 +248,7 @@ function prepareObject(object) {
 
 // clone()'d objects share one material per mesh by default, so tinting a
 // single instance would tint every repeat of that same food. Give each mesh
-// its own material, plus a "special" twin (filter tint or solid color,
-// per YELLOW_MODE above) ready to swap in later.
+// its own material, plus a yellow-stage twin ready to swap in later.
 function prepareFilterMaterials(group) {
   group.traverse((child) => {
     if (!child.isMesh) return;
@@ -270,58 +273,16 @@ function createSolidColorTexture(hexColor) {
   return texture;
 }
 
-// Draws the object's real texture onto a canvas, then paints a semi-opaque
-// yellow rectangle over it (alpha = strength) and hands back the flattened
-// result as a new texture — an actual "yellow texture layered on the
-// existing texture", not a shader-level tint. Waits for the source image if
-// it hasn't finished loading yet.
-function bakeYellowOverlayTexture(baseTexture, hexColor, strength, onReady) {
-  const img = baseTexture.image;
-  if (!img) return;
-  const bake = () => {
-    const w = img.naturalWidth || img.width || 512;
-    const h = img.naturalHeight || img.height || 512;
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, w, h);
-    ctx.globalAlpha = strength;
-    ctx.fillStyle = `#${new THREE.Color(hexColor).getHexString()}`;
-    ctx.fillRect(0, 0, w, h);
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = baseTexture.colorSpace;
-    texture.wrapS = baseTexture.wrapS;
-    texture.wrapT = baseTexture.wrapT;
-    texture.repeat.copy(baseTexture.repeat);
-    onReady(texture);
-  };
-  if (img.complete || img.videoWidth) bake();
-  else img.addEventListener('load', bake, { once: true });
-}
-
+// The yellow stage's material: texture removed entirely in favor of a flat
+// generated color texture, plus an emissive floor of the same color so the
+// shaded/dark side of the object doesn't drop toward black — see
+// YELLOW_EMISSIVE_INTENSITY above.
 function buildYellowMaterial(normal) {
   const yellow = normal.clone();
+  yellow.map = createSolidColorTexture(YELLOW_COLOR);
   yellow.color.set(0xffffff); // the texture itself carries the color now
-
-  if (YELLOW_MODE === 'solid') {
-    // Texture removed entirely — a flat generated color texture instead.
-    yellow.map = createSolidColorTexture(YELLOW_SOLID_COLOR);
-    return yellow;
-  }
-
-  // Filter mode: start with a plain tinted texture immediately (so there's
-  // always a real texture in place, even before the source image is ready),
-  // then swap in the true "yellow layered over the existing texture" bake
-  // once the original image has actually finished loading.
-  const fallbackColor = normal.color.clone().lerp(new THREE.Color(YELLOW_FILTER_COLOR), YELLOW_FILTER_STRENGTH);
-  yellow.map = createSolidColorTexture(fallbackColor.getHex());
-  if (normal.map) {
-    bakeYellowOverlayTexture(normal.map, YELLOW_FILTER_COLOR, YELLOW_FILTER_STRENGTH, (baked) => {
-      yellow.map = baked;
-      yellow.needsUpdate = true;
-    });
-  }
+  yellow.emissive = new THREE.Color(YELLOW_COLOR);
+  yellow.emissiveIntensity = YELLOW_EMISSIVE_INTENSITY;
   return yellow;
 }
 
