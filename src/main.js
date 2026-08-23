@@ -81,6 +81,7 @@ const BTN_SPIN_DURATION = 0.7; // seconds for the release-triggered spin back up
 const app = document.getElementById('app');
 const statusEl = document.getElementById('status');
 const btnRandomObject = document.getElementById('btn-random-object');
+const hud1El = document.getElementById('hud-1');
 const hud1Svg = document.getElementById('hud1-svg');
 const hud1MaskBg = document.getElementById('hud1-mask-bg');
 const hud1Frame = document.getElementById('hud1-frame');
@@ -621,18 +622,12 @@ let panTween = null; // { fromPos, toPos, fromTarget, toTarget, start } — ease
 let autoAdvanceTimer = 0;
 let dragging = false;
 
-// Set VITE_DEBUG=true (in a local, gitignored .env.local — see
-// .env.local.example) and restart the dev server to start the app straight
-// into debug mode (free camera + the object picker, see
-// setDebugMode()/renderDebugObjectList()). Vite only exposes env vars
-// prefixed VITE_ to client code, and only inlines them at build time, so
-// this can never end up true in the GitHub Pages build unless that
-// workflow explicitly sets it — there's deliberately no in-app control
-// (keypress or UI toggle) for this dev-only tool.
-const DEBUG = import.meta.env.VITE_DEBUG === 'true';
-// Free camera, no zoom limits, while true. Always starts equal to DEBUG
-// above (see the setDebugMode(DEBUG) call near its definition) — nothing at
-// runtime reassigns this except setDebugMode itself.
+// Free camera, no zoom limits, while true (see setDebugMode()). Toggled
+// with the '0' key — but that listener only ever gets attached under
+// import.meta.env.DEV (see near setDebugMode's definition below), which
+// Vite hard-codes to true only for `npm run dev` and false for any `vite
+// build` output, GitHub Pages included — so there's no way to reach this
+// from the deployed site regardless of what anyone presses.
 let debugMode = false;
 
 // How far the user can zoom in/out from the focused object's close-up
@@ -880,6 +875,10 @@ function setDebugMode(on) {
   // shape's pointer-events back off for as long as debug mode is on.
   hud1Svg.classList.toggle('goggle-hit-disabled', debugMode);
   debugObjectListEl.classList.toggle('visible', debugMode);
+  // Always starts a debug session (and always leaves one) with the mask
+  // back on — its own off state (see setHudMaskVisible) is only meant to
+  // last for as long as this particular debug session does.
+  setHudMaskVisible(true);
   if (debugMode) {
     // Same generic bounds the controls start with before any object is shown.
     controls.minDistance = 0.05;
@@ -889,11 +888,27 @@ function setDebugMode(on) {
   }
 }
 
-// Applies DEBUG's value once at startup — the only place debug mode is ever
-// switched on, since there's no runtime control for it (see DEBUG's comment
-// above). renderDebugObjectList() hasn't necessarily run yet at this point,
-// but that only affects what's *in* the (still correctly shown/hidden) list.
-setDebugMode(DEBUG);
+// Debug-mode-only: hides #hud-1 outright (the goggle-shaped cutout *and*
+// the solid frame around it) so the raw scene shows edge-to-edge — no
+// goggle, no black, just the yellow three.js canvas. True (mask on, i.e.
+// today's normal look) is the default/reset state; see setDebugMode above.
+let hudMaskVisible = true;
+function setHudMaskVisible(visible) {
+  hudMaskVisible = visible;
+  hud1El.classList.toggle('hud-hidden', !visible);
+}
+
+// Dev-only: import.meta.env.DEV is statically true under `npm run dev` and
+// statically false in any `vite build` output (GitHub Pages included), so
+// these listeners — the only way debug mode (and its mask toggle) is ever
+// reached — simply aren't registered at all outside local development,
+// regardless of what anyone presses on the deployed site.
+if (import.meta.env.DEV) {
+  window.addEventListener('keydown', (e) => {
+    if (e.key === '0') setDebugMode(!debugMode);
+    if (e.key === 'm' && debugMode) setHudMaskVisible(!hudMaskVisible);
+  });
+}
 
 // Turn count backing the CSS custom property --spin (see index.html): every
 // rule there builds its rotate() off this ever-growing angle instead of a

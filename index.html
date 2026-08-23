@@ -73,6 +73,11 @@
         z-index: 100;
         pointer-events: none;
       }
+      /* Debug-mode-only ('m' key, see main.js's setHudMaskVisible) — hides
+         the goggle frame entirely so the raw scene fills the screen. */
+      #hud-1.hud-hidden {
+        display: none;
+      }
       #hud-1 svg {
         display: block;
         width: 100%;
